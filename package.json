@@ -1,0 +1,27 @@
+{
+  "name": "nexus-agent",
+  "version": "3.0.0",
+  "description": "Nexus Agent — Autonomous Software Engineering AI Harness",
+  "author": "Nexus Agent Project",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win --x64"
+  },
+  "build": {
+    "appId": "com.nexus.agent",
+    "productName": "Nexus Agent",
+    "directories": { "output": "dist" },
+    "win": {
+      "target": [{ "target": "zip", "arch": ["x64"] }],
+      "icon": "assets/icon.ico",
+      "forceCodeSigning": false,
+      "signAndEditExecutable": false
+    },
+    "files": ["src/**/*","assets/**/*","package.json","node_modules/**/*"]
+  },
+  "devDependencies": {
+    "electron": "^27.0.0",
+    "electron-builder": "^24.6.0"
+  }
+}

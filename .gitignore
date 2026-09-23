@@ -1,0 +1,38 @@
+# Build output
+dist/
+node_modules/
+
+# Config with API keys (NEVER commit)
+*.json
+!package.json
+!package-lock.json
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# Electron builder cache
+.electron-builder-cache/
+builder-debug.yml
+builder-effective-config.yaml
+
+# Test artifacts
+coverage/
+*.test.js.snap
+
+# Local user data
+NexusAgent/
+*.gguf
+*.bin
+*.safetensors
+
+# Logs
+*.log
+npm-debug.log*

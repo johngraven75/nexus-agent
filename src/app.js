@@ -1,0 +1,1929 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   NEXUS AGENT v3 · app.js
+   Full AI adapters + Doctor + Media + Connectors + Skills
+═══════════════════════════════════════════════════════════════════════════ */
+'use strict';
+
+// ── State ─────────────────────────────────────────────────────────────────────
+const S = {
+  cfg: {}, mode: 'agent', conv: [], running: false,
+  steps: 0, tokens: 0, ws: '', plan: [], ctx: '',
+  curFile: null, termHist: [], termIdx: -1,
+  imgProvider: 'dalle3', vidProvider: 'runway_gen4',
+  genHistory: [],
+};
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+(async () => {
+  // Load config and apply free-tier defaults for any missing fields
+  const rawCfg = await nexus.getConfig();
+  S.cfg = FreeTier.applyFreeDefaults(rawCfg);
+  S.ws  = await nexus.getWorkspace();
+
+  populateSettings();
+  updateStatus();
+  renderTools();
+  await rfTree();
+  await Connectors.init();
+  await Skills.init();
+  renderConnectors('');
+  renderSkills('', 'All');
+  buildMediaProviderSelectors();
+  renderActiveSkillsMini();
+
+  // HF download progress
+  nexus.onHfProgress(p => {
+    const bar = document.getElementById('dl-bar');
+    const pct = document.getElementById('dl-pct');
+    const lbl = document.getElementById('dl-label');
+    const dp  = document.getElementById('dl-progress');
+    if (bar) bar.style.width = p.pct + '%';
+    if (pct) pct.textContent = p.pct + '%';
+    if (lbl) lbl.textContent = `${fmtBytes(p.received)} / ${fmtBytes(p.total)}`;
+    if (dp)  dp.classList.add('on');
+  });
+
+  // Auto-detect best working free provider and show setup UI
+  const isFirstLaunch = !rawCfg.primaryProvider || (rawCfg.primaryProvider === 'anthropic' && !rawCfg.anthropicKey);
+  const hasAnyKey     = !!(rawCfg.anthropicKey || rawCfg.openaiKey || rawCfg.openrouterKey ||
+                            rawCfg.groqKey || rawCfg.hfToken || rawCfg.geminiKey ||
+                            rawCfg.primaryProvider === 'ollama');
+
+  sysMsg('🚀 Nexus Agent v3 starting…\nDetecting available providers…');
+
+  try {
+    const boot = await FreeTier.bootSetup(S.cfg, (newCfg) => {
+      S.cfg = newCfg;
+      populateSettings();
+      updateStatus();
+      renderTools();
+    });
+
+    if (boot.detected.winner) {
+      const prov = boot.detected.winner;
+      // Set the winning provider as active
+      S.cfg.primaryProvider = prov;
+      if (prov === 'huggingface') S.cfg.hfInferenceMode = 'serverless';
+      await nexus.saveConfig(S.cfg);
+      populateSettings();
+      updateStatus();
+      renderTools();
+
+      sysMsg([
+        '✅ Ready!  Provider: ' + boot.detected.detail,
+        '',
+        '🤖 Modes: Agent · Chat · Code · Plan · Debug · Architect · Docs · Security',
+        '📁 Files  ⚡ Terminal  🎨 Media Gen  🩺 App Doctor  🔌 Connectors  ⭐ Skills',
+        '',
+        hasAnyKey
+          ? 'Using your configured API key.'
+          : '🆓 Running on free tier — no API key required.',
+        'Type your task below to start.',
+      ].join('\n'));
+
+      FreeTier.renderSetupBanner(boot.detected, false);
+    } else {
+      // Nothing working — show full setup banner
+      sysMsg([
+        '👋 Welcome to Nexus Agent v3!',
+        '',
+        'No provider connected yet. Choose a free option below:',
+        '• OpenRouter — free models, just needs a free account',
+        '• HuggingFace — zero config, no key needed',
+        '• Ollama — fully local, 100% private',
+        '• Groq — ultra-fast Llama 3.3, free tier',
+        '',
+        'Or paste any API key in the box below.',
+      ].join('\n'));
+      FreeTier.renderSetupBanner(boot.detected, true);
+    }
+  } catch(e) {
+    // Boot detection failed — still show the app usably
+    sysMsg('👋 Nexus Agent v3 ready. Add an API key in Settings → Providers to begin.');
+    console.error('Boot detect error:', e);
+  }
+})();
+
+// ── Navigation ─────────────────────────────────────────────────────────────────
+function sv(view) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.querySelectorAll('.nav').forEach(b => b.classList.remove('active'));
+  document.getElementById(`view-${view}`).classList.add('active');
+  document.querySelector(`[data-v="${view}"]`)?.classList.add('active');
+  if (view === 'files')      rfFiles();
+  if (view === 'connectors') renderConnectors(document.getElementById('cat-search')?.value || '');
+  if (view === 'skills')     renderSkills(document.getElementById('skills-search')?.value || '', currentSkillCat);
+}
+
+function pt(tab) {
+  document.querySelectorAll('.ptab').forEach(t => t.classList.remove('on'));
+  document.querySelectorAll('.ppane').forEach(p => p.classList.remove('on'));
+  document.querySelector(`[data-pt="${tab}"]`)?.classList.add('on');
+  document.getElementById(`pp-${tab}`)?.classList.add('on');
+  if (tab === 'tree') rfTree();
+}
+
+function st(tab) {
+  document.querySelectorAll('.stab').forEach(t => t.classList.remove('on'));
+  document.querySelectorAll('.spane').forEach(p => p.classList.remove('on'));
+  document.querySelector(`[data-st="${tab}"]`)?.classList.add('on');
+  document.getElementById(`st-${tab}`)?.classList.add('on');
+  if (tab === 'hf')    refreshLocalModels();
+  if (tab === 'local') loadOllamaModels();
+}
+
+function setMode(m) {
+  S.mode = m;
+  document.querySelectorAll('.chip').forEach(c => c.classList.remove('on'));
+  document.querySelector(`[data-m="${m}"]`)?.classList.add('on');
+}
+
+// ── Messages ───────────────────────────────────────────────────────────────────
+function addMsg(role, content, uiClass) {
+  if (role !== 'sys-ui') S.conv.push({ role, content });
+  const box = document.getElementById('msgs');
+  const div = document.createElement('div');
+  div.className = `msg ${uiClass || role}`;
+  const avMap  = { user:'av-user', ai:'av-ai', tool:'av-tool', sys:'av-sys', 'sys-ui':'av-sys', err:'av-sys' };
+  const chrMap = { user:'U', ai:'N', tool:'⚡', sys:'ℹ', 'sys-ui':'ℹ', err:'!' };
+  const uic = uiClass || role;
+  const time = new Date().toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' });
+  div.innerHTML = `
+    <div class="av ${avMap[uic]||'av-sys'}">${chrMap[uic]||'?'}</div>
+    <div class="msg-body">
+      <div class="bubble">${esc(content)}</div>
+      <div class="msg-ts">${time}</div>
+    </div>`;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+const sysMsg  = t => addMsg('sys-ui', t, 'sys');
+const toolMsg = t => addMsg('tool',   t, 'tool');
+const errMsg  = t => addMsg('err',    t, 'err');
+const esc     = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+function typing(on, lbl = 'Thinking…') {
+  const el = document.getElementById('typing');
+  const lb = document.getElementById('tlbl');
+  el.className = on ? 'on' : '';
+  if (lb) lb.textContent = lbl;
+}
+
+function clearChat() {
+  document.getElementById('msgs').innerHTML = '';
+  S.conv = []; S.plan = []; renderPlan();
+  sysMsg('Chat cleared.');
+}
+
+async function exportChat() {
+  const txt = S.conv.map(m => `[${m.role.toUpperCase()}]\n${m.content}`).join('\n\n---\n\n');
+  await nexus.writeFile(`${S.ws}/chat-export-${Date.now()}.txt`, txt);
+  toast('Exported', 'ok');
+}
+
+// ── Send / Main loop ───────────────────────────────────────────────────────────
+document.getElementById('msg-in').addEventListener('input', function () {
+  this.style.height = '';
+  this.style.height = Math.min(this.scrollHeight, 140) + 'px';
+});
+document.getElementById('msg-in').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
+});
+
+async function sendMsg() {
+  const el   = document.getElementById('msg-in');
+  const text = el.value.trim();
+  if (!text || S.running) return;
+  el.value = ''; el.style.height = '';
+  addMsg('user', text);
+  if (!activeKey()) { sysMsg('⚠️ No API key. Go to Settings → Providers.'); return; }
+  if (S.mode === 'agent') await agentLoop(text);
+  else await simpleChat(text);
+}
+
+// ── Simple chat ────────────────────────────────────────────────────────────────
+async function simpleChat(text) {
+  setRunning(true, 'Thinking…');
+  const sysMap = {
+    chat:     'You are a helpful AI assistant.',
+    code:     'You are an expert software engineer. Provide clean, well-commented, production-ready code with explanations.',
+    plan:     'You are a software architect. Create detailed, actionable plans with clear numbered steps.',
+    debug:    'You are an expert debugger. Analyze problems systematically, identify root causes, and provide fixes.',
+    arch:     'You are a principal software architect. Design scalable, maintainable systems with clear rationale.',
+    doc:      'You are a technical writer. Write clear, comprehensive documentation.',
+    security: 'You are a security expert. Analyze for OWASP Top 10 and provide specific remediation steps.',
+  };
+  const activeSkills = Skills.getEnabled();
+  const skillCtx = activeSkills.length
+    ? `\n\nACTIVE SKILLS:\n${activeSkills.map(s => `[${s.name}]: ${s.prompt.slice(0, 200)}`).join('\n\n')}`
+    : '';
+  const system = (sysMap[S.mode] || sysMap.chat) + skillCtx + (S.ctx ? `\n\nCONTEXT: ${S.ctx}` : '');
+  try {
+    const r = await callAI(system, S.conv.slice(-20));
+    addMsg('assistant', r, 'ai');
+    S.tokens += estTok(r);
+    updateStatus();
+  } catch(e) { errMsg(`Error: ${e.message}`); }
+  setRunning(false);
+}
+
+// ── Agent loop ─────────────────────────────────────────────────────────────────
+const AGENT_SYS = `You are Nexus Agent v3, an elite autonomous software engineering AI. Build complete, production-ready software end-to-end.
+
+RESPOND WITH ONLY JSON WHEN USING A TOOL. No text before/after the JSON object.
+
+TOOL FORMAT:
+{"tool":"<name>","args":{...}}
+
+TOOLS:
+{"tool":"read_file","args":{"path":"relative/path"}}
+{"tool":"write_file","args":{"path":"relative/path","content":"full content"}}
+{"tool":"list_files","args":{"dir":"optional"}}
+{"tool":"delete_file","args":{"path":"relative/path"}}
+{"tool":"run_command","args":{"cmd":"shell command","cwd":"optional"}}
+{"tool":"search_web","args":{"query":"terms"}}
+{"tool":"create_plan","args":{"title":"Plan","steps":["step1","step2"]}}
+{"tool":"update_plan","args":{"index":0,"status":"active|done|error","detail":"note"}}
+{"tool":"think","args":{"thought":"internal reasoning"}}
+{"tool":"ask_user","args":{"question":"only when truly blocked"}}
+{"tool":"task_complete","args":{"summary":"what was accomplished"}}
+
+RULES:
+1. Start every multi-step task with create_plan.
+2. Think before architectural decisions.
+3. Write COMPLETE file contents — no placeholders, no truncation.
+4. Verify written files with read_file.
+5. Run setup commands: npm install, pip install, git init, etc.
+6. Fix errors autonomously — analyze the error, try differently.
+7. Build working runnable software with all required config files.
+8. Call task_complete when done.`;
+
+async function agentLoop(task) {
+  setRunning(true);
+  S.steps = 0;
+  const maxSteps = parseInt(S.cfg.maxSteps || 25);
+
+  // Build context including active skills
+  const activeSkills = Skills.getEnabled();
+  const skillCtx = activeSkills.length
+    ? `\nACTIVE SKILLS (use these capabilities):\n${activeSkills.map(s=>`• ${s.name}: ${s.desc}`).join('\n')}`
+    : '';
+
+  const msgs = [
+    ...S.conv.slice(-8),
+    ...(S.ctx || skillCtx ? [{ role:'user', content:`[CONTEXT]${S.ctx ? '\n'+S.ctx : ''}${skillCtx}` }] : []),
+    { role:'user', content: task },
+  ];
+
+  sysMsg(`🚀 Agent starting — max ${maxSteps} steps (${activeProvider()})`);
+
+  while (S.steps < maxSteps) {
+    S.steps++;
+    updateStatus();
+    typing(true, `Step ${S.steps}/${maxSteps} — reasoning…`);
+
+    let reply;
+    try { reply = await callAI(AGENT_SYS, msgs, { maxTokens: parseInt(S.cfg.maxTokens || 8192) }); }
+    catch(e) { errMsg(`API error (step ${S.steps}): ${e.message}`); break; }
+
+    S.tokens += estTok(reply);
+    updateStatus();
+
+    const tc = parseTool(reply);
+    if (!tc) {
+      addMsg('assistant', reply, 'ai');
+      msgs.push({ role:'assistant', content: reply });
+      break;
+    }
+
+    typing(true, `Step ${S.steps} → ${tc.tool}…`);
+    const result = await execTool(tc.tool, tc.args);
+    toolMsg(`[${tc.tool}] ${JSON.stringify(tc.args).slice(0, 100)}`);
+    if (result.display) toolMsg(result.display);
+
+    msgs.push({ role:'assistant', content: JSON.stringify(tc) });
+    msgs.push({ role:'user',      content: `[TOOL_RESULT:${tc.tool}]\n${result.out}` });
+
+    if (tc.tool === 'task_complete') {
+      addMsg('assistant', `✅ Done!\n\n${tc.args.summary || result.out}`, 'ai');
+      markPlanDone();
+      await rfTree();
+      break;
+    }
+    if (tc.tool === 'ask_user') { addMsg('assistant', `🙋 ${tc.args.question}`, 'ai'); break; }
+    if (result.fatal) { errMsg(`Fatal: ${result.out}`); break; }
+    await sleep(250);
+  }
+
+  if (S.steps >= maxSteps) sysMsg(`⚠️ Max steps (${maxSteps}) reached. Send a follow-up to continue.`);
+  setRunning(false);
+  await rfTree();
+}
+
+function parseTool(text) {
+  const t = text.trim();
+  try { const o = JSON.parse(t); if (o?.tool) return o; } catch {}
+  const m = t.match(/\{[\s\S]*?"tool"[\s\S]*?\}/);
+  if (m) { try { const o = JSON.parse(m[0]); if (o?.tool) return o; } catch {} }
+  const cb = t.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+  if (cb) { try { const o = JSON.parse(cb[1]); if (o?.tool) return o; } catch {} }
+  return null;
+}
+
+// ── Tools ──────────────────────────────────────────────────────────────────────
+async function execTool(tool, args) {
+  try {
+    switch (tool) {
+      case 'read_file': {
+        const p = rp(args.path), c = await nexus.readFile(p);
+        if (c === null) return { out: `ERROR: Not found: ${args.path}` };
+        const t = c.length > 12000 ? c.slice(0,12000)+'\n…[truncated]' : c;
+        return { out: t, display: `📄 ${args.path} (${c.length} chars)` };
+      }
+      case 'write_file': {
+        const p = rp(args.path), ok = await nexus.writeFile(p, args.content || '');
+        if (!ok) return { out: `ERROR: Cannot write ${args.path}` };
+        await rfTree();
+        return { out: `Written: ${args.path} (${(args.content||'').length} bytes)`, display: `✅ Wrote ${args.path}` };
+      }
+      case 'list_files': {
+        const dir = args.dir ? rp(args.dir) : S.ws;
+        const files = await nexus.listFiles(dir);
+        const flat = flatFiles(files);
+        return { out: flat.join('\n') || '(empty)', display: `📁 ${flat.length} items` };
+      }
+      case 'delete_file': {
+        const ok = await nexus.deleteFile(rp(args.path));
+        return { out: ok ? `Deleted: ${args.path}` : `ERROR: Cannot delete ${args.path}` };
+      }
+      case 'run_command': {
+        appendTerm(`$ ${args.cmd}`, 'cmd');
+        const cwd = args.cwd ? rp(args.cwd) : S.ws;
+        const r = await nexus.execCmd(args.cmd, cwd);
+        if (r.stdout) appendTerm(r.stdout, 'out');
+        if (r.stderr) appendTerm(r.stderr, 'err');
+        const out = [r.stdout, r.stderr].filter(Boolean).join('\n').trim();
+        return { out: out || `exit: ${r.code}`, fatal: r.code !== 0 && !r.stdout, display: `⚡ exit:${r.code}` };
+      }
+      case 'search_web': {
+        const r = await webSearch(args.query);
+        return { out: r, display: `🔍 "${args.query}"` };
+      }
+      case 'create_plan': {
+        S.plan = (args.steps||[]).map(s => ({ text:s, status:'pending', detail:'' }));
+        renderPlan(); pt('plan');
+        return { out: `Plan: ${S.plan.length} steps`, display: `📋 ${args.title||'Plan'}` };
+      }
+      case 'update_plan': {
+        if (S.plan[args.index] !== undefined) {
+          S.plan[args.index].status = args.status || 'done';
+          if (args.detail) S.plan[args.index].detail = args.detail;
+          renderPlan();
+        }
+        return { out: `Step ${args.index+1} → ${args.status}` };
+      }
+      case 'think': {
+        sysMsg(`💭 ${args.thought}`);
+        return { out: `Thought: ${args.thought}` };
+      }
+      case 'ask_user':    return { out: `[Waiting: ${args.question}]` };
+      case 'task_complete': return { out: args.summary || 'Done.' };
+      default: return { out: `ERROR: Unknown tool: ${tool}` };
+    }
+  } catch(e) { return { out: `ERROR in ${tool}: ${e.message}` }; }
+}
+
+function rp(p) {
+  if (!p) return S.ws;
+  if (/^[A-Za-z]:[\\\/]/.test(p) || p.startsWith('/')) return p;
+  return `${S.ws}/${p}`.replace(/\\/g, '/');
+}
+function flatFiles(items, pfx = '') {
+  const r = [];
+  for (const i of (items||[])) {
+    const rel = pfx ? `${pfx}/${i.name}` : i.name;
+    if (i.type==='dir') { r.push(`📁 ${rel}/`); r.push(...flatFiles(i.children||[], rel)); }
+    else r.push(`📄 ${rel}`);
+  }
+  return r;
+}
+
+// ── Web search ─────────────────────────────────────────────────────────────────
+async function webSearch(query) {
+  if (S.cfg.webSearch === 'disabled') return '[Web search disabled]';
+  try {
+    const r = await nexus.httpRequest({ method:'GET', url:`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`, headers:{}, timeout:10 });
+    if (r.status===200 && r.data) {
+      const d = r.data, parts = [];
+      if (d.AbstractText) parts.push(d.AbstractText);
+      if (d.Answer) parts.push(`Answer: ${d.Answer}`);
+      (d.RelatedTopics||[]).slice(0,5).forEach(t=>{ if(t.Text) parts.push(`• ${t.Text}`); });
+      return parts.join('\n') || `No results for "${query}"`;
+    }
+  } catch {}
+  return `Search unavailable for: "${query}"`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  AI PROVIDER ADAPTERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function activeProvider() { return S.cfg.primaryProvider || 'anthropic'; }
+function activeKey() {
+  const p = activeProvider();
+  // HuggingFace serverless works without any key (public models)
+  if (p === 'huggingface' && (S.cfg.hfInferenceMode === 'serverless' || !S.cfg.hfInferenceMode)) return 'hf-serverless-free';
+  // Ollama and LM Studio are local — no key needed
+  if (p === 'ollama')   return 'local-ollama';
+  if (p === 'lmstudio') return 'local-lmstudio';
+  const map = {
+    anthropic:   S.cfg.anthropicKey,
+    openai:      S.cfg.openaiKey,
+    gemini:      S.cfg.geminiKey,
+    groq:        S.cfg.groqKey,
+    mistral:     S.cfg.mistralKey,
+    together:    S.cfg.togetherKey,
+    openrouter:  S.cfg.openrouterKey,
+    huggingface: S.cfg.hfToken,
+    custom:      S.cfg.customEndpointKey || 'custom',
+  };
+  return map[p] || '';
+}
+
+async function callAI(system, messages, opts = {}) {
+  const p  = activeProvider();
+  const mt = opts.maxTokens || parseInt(S.cfg.maxTokens || 4096);
+  const tp = parseFloat(S.cfg.temperature || 0.3);
+  const msgs = messages.filter(m => m.role==='user'||m.role==='assistant').map(m=>({ role:m.role, content:m.content }));
+  switch(p) {
+    case 'anthropic':   return callAnthropic(system, msgs, mt, tp);
+    case 'openai':      return callOpenAI(system, msgs, mt, tp, 'https://api.openai.com', S.cfg.openaiKey, S.cfg.openaiModel||'gpt-4o', '/v1/chat/completions');
+    case 'gemini':      return callGemini(system, msgs, mt, tp);
+    case 'groq':        return callOpenAI(system, msgs, mt, tp, 'https://api.groq.com', S.cfg.groqKey, S.cfg.groqModel||'llama-3.3-70b-versatile', '/openai/v1/chat/completions');
+    case 'mistral':     return callOpenAI(system, msgs, mt, tp, 'https://api.mistral.ai', S.cfg.mistralKey, S.cfg.mistralModel||'mistral-large-latest', '/v1/chat/completions');
+    case 'together':    return callOpenAI(system, msgs, mt, tp, 'https://api.together.xyz', S.cfg.togetherKey, S.cfg.togetherModel||'meta-llama/Llama-3.3-70B-Instruct-Turbo', '/v1/chat/completions');
+    case 'openrouter':  return callOpenRouter(system, msgs, mt, tp);
+    case 'huggingface': return callHuggingFaceAuto(system, msgs, mt, tp);
+    case 'ollama':      return callOllama(system, msgs, mt, tp);
+    case 'lmstudio':    return callOpenAI(system, msgs, mt, tp, S.cfg.lmstudioUrl||'http://localhost:1234', '', S.cfg.lmstudioModel||'local-model', '/v1/chat/completions');
+    case 'custom':      return callCustom(system, msgs, mt, tp);
+    default: throw new Error(`Unknown provider: ${p}`);
+  }
+}
+
+async function callAnthropic(system, msgs, maxTokens, temperature) {
+  const r = await nexus.httpRequest({ method:'POST', url:'https://api.anthropic.com/v1/messages', headers:{'x-api-key':S.cfg.anthropicKey,'anthropic-version':'2023-06-01','Content-Type':'application/json'}, body:{ model:S.cfg.anthropicModel||'claude-sonnet-4-6', max_tokens:maxTokens, temperature, system, messages:msgs } });
+  if (r.status!==200) throw new Error(`Anthropic ${r.status}: ${r.data?.error?.message||JSON.stringify(r.data)}`);
+  return r.data.content?.[0]?.text || '';
+}
+
+async function callOpenAI(system, msgs, maxTokens, temperature, baseUrl, apiKey, model, path='/v1/chat/completions', extraHeaders={}) {
+  const headers = { 'Content-Type':'application/json', ...extraHeaders };
+  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+  const r = await nexus.httpRequest({ method:'POST', url:`${baseUrl}${path}`, headers, body:{ model, messages:[{role:'system',content:system},...msgs], max_tokens:maxTokens, temperature } });
+  if (r.status!==200) throw new Error(`${baseUrl} ${r.status}: ${r.data?.error?.message||JSON.stringify(r.data)}`);
+  return r.data.choices?.[0]?.message?.content || '';
+}
+
+async function callGemini(system, msgs, maxTokens, temperature) {
+  const model = S.cfg.geminiModel || 'gemini-2.0-flash';
+  const r = await nexus.httpRequest({ method:'POST', url:`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, headers:{'Content-Type':'application/json','x-goog-api-key':S.cfg.geminiKey}, body:{ system_instruction:{parts:[{text:system}]}, contents:msgs.map(m=>({role:m.role==='assistant'?'model':'user',parts:[{text:m.content}]})), generationConfig:{maxOutputTokens:maxTokens,temperature} } });
+  if (r.status!==200) throw new Error(`Gemini ${r.status}: ${r.data?.error?.message||JSON.stringify(r.data)}`);
+  return r.data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+}
+
+async function callHuggingFace(system, msgs, maxTokens, temperature) {
+  const model   = S.cfg.hfModel || 'mistralai/Mistral-7B-Instruct-v0.3';
+  const token   = S.cfg.hfToken;
+  const mode    = S.cfg.hfInferenceMode || 'api';
+  const headers = { 'Content-Type':'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  if (mode === 'dedicated') {
+    const url = S.cfg.hfEndpointUrl;
+    if (!url) throw new Error('Dedicated HF endpoint URL not set');
+    return callOpenAI(system, msgs, maxTokens, temperature, url.replace(/\/v1.*/,''), token, model, '/v1/chat/completions');
+  }
+  // Try chat completions first
+  const chatUrl = `https://api-inference.huggingface.co/models/${model}/v1/chat/completions`;
+  const chatR = await nexus.httpRequest({ method:'POST', url:chatUrl, headers, body:{ model, messages:[{role:'system',content:system},...msgs], max_tokens:maxTokens, temperature, stream:false }, timeout:60 });
+  if (chatR.status===200 && chatR.data?.choices?.[0]?.message?.content) return chatR.data.choices[0].message.content;
+  // Fall back to text-generation
+  const prompt = buildHFPrompt(system, msgs);
+  const r = await nexus.httpRequest({ method:'POST', url:`https://api-inference.huggingface.co/models/${model}`, headers, body:{ inputs:prompt, parameters:{ max_new_tokens:maxTokens, temperature, return_full_text:false, do_sample:temperature>0 }, options:{ wait_for_model:true } }, timeout:120 });
+  if (r.status===503) throw new Error('HF model is loading — try again in ~20 seconds');
+  if (r.status!==200) throw new Error(`HF ${r.status}: ${JSON.stringify(r.data)}`);
+  const d = r.data;
+  if (Array.isArray(d)) return d[0]?.generated_text || '';
+  return d?.generated_text || '';
+}
+
+function buildHFPrompt(system, msgs) {
+  let p = `<|system|>\n${system}</s>\n`;
+  for (const m of msgs) {
+    p += m.role==='user' ? `<|user|>\n${m.content}</s>\n` : `<|assistant|>\n${m.content}</s>\n`;
+  }
+  return p + '<|assistant|>\n';
+}
+
+async function callOllama(system, msgs, maxTokens, temperature) {
+  const base  = S.cfg.ollamaUrl || 'http://localhost:11434';
+  const model = S.cfg.ollamaModel || 'llama3.3';
+  const r = await nexus.httpRequest({ method:'POST', url:`${base}/api/chat`, headers:{'Content-Type':'application/json'}, body:{ model, messages:[{role:'system',content:system},...msgs], stream:false, options:{temperature,num_predict:maxTokens} }, timeout:120 });
+  if (r.status!==200) throw new Error(`Ollama ${r.status}: ${JSON.stringify(r.data)}`);
+  return r.data.message?.content || r.data?.response || '';
+}
+
+async function callCustom(system, msgs, maxTokens, temperature) {
+  const url   = S.cfg.customEndpointUrl;
+  const key   = S.cfg.customEndpointKey;
+  const model = S.cfg.customEndpointModel || 'local';
+  const fmt   = S.cfg.customEndpointFmt || 'openai';
+  if (!url) throw new Error('Custom endpoint URL not configured');
+  const headers = { 'Content-Type':'application/json' };
+  if (key) headers['Authorization'] = `Bearer ${key}`;
+  if (fmt==='anthropic') {
+    const r = await nexus.httpRequest({ method:'POST', url, headers:{...headers,'x-api-key':key,'anthropic-version':'2023-06-01'}, body:{model,max_tokens:maxTokens,temperature,system,messages:msgs} });
+    if (r.status!==200) throw new Error(`Custom ${r.status}: ${JSON.stringify(r.data)}`);
+    return r.data.content?.[0]?.text || '';
+  }
+  if (fmt==='hf') {
+    const r = await nexus.httpRequest({ method:'POST', url, headers, body:{inputs:buildHFPrompt(system,msgs),parameters:{max_new_tokens:maxTokens,temperature}} });
+    if (r.status!==200) throw new Error(`Custom HF ${r.status}`);
+    return Array.isArray(r.data) ? r.data[0]?.generated_text||'' : r.data?.generated_text||'';
+  }
+  const r = await nexus.httpRequest({ method:'POST', url, headers, body:{model,messages:[{role:'system',content:system},...msgs],max_tokens:maxTokens,temperature} });
+  if (r.status!==200) throw new Error(`Custom ${r.status}: ${r.data?.error?.message||JSON.stringify(r.data)}`);
+  return r.data.choices?.[0]?.message?.content || '';
+}
+
+// ── Settings ───────────────────────────────────────────────────────────────────
+function populateSettings() {
+  const c = S.cfg;
+  const set = (id, v) => { const e=document.getElementById(id); if(e&&v!==undefined) e.value=v; };
+  set('s-ant-key',   c.anthropicKey);  set('s-ant-model', c.anthropicModel||'claude-sonnet-4-6');
+  set('s-oai-key',   c.openaiKey);     set('s-oai-model', c.openaiModel||'gpt-4o');
+  set('s-gem-key',   c.geminiKey);     set('s-gem-model', c.geminiModel||'gemini-2.0-flash');
+  set('s-grq-key',   c.groqKey);       set('s-grq-model', c.groqModel||'llama-3.3-70b-versatile');
+  set('s-mis-key',   c.mistralKey);    set('s-mis-model', c.mistralModel||'mistral-large-latest');
+  set('s-tog-key',   c.togetherKey);   set('s-tog-model', c.togetherModel||'meta-llama/Llama-3.3-70B-Instruct-Turbo');
+  set('s-ort-key',   c.openrouterKey); set('s-ort-model', c.openrouterModel||'anthropic/claude-3.5-sonnet');
+  set('s-hf-token',  c.hfToken);       set('s-hf-model',  c.hfModel||'mistralai/Mistral-7B-Instruct-v0.3');
+  set('s-hf-mode',   c.hfInferenceMode||'api'); set('s-hf-endpoint', c.hfEndpointUrl||'');
+  set('s-ola-url',   c.ollamaUrl||'http://localhost:11434'); set('s-ola-model', c.ollamaModel||'');
+  set('s-lms-url',   c.lmstudioUrl||'http://localhost:1234'); set('s-lms-model', c.lmstudioModel||'local-model');
+  set('s-max-tok',   c.maxTokens||8192); set('s-temp', c.temperature||0.3); set('s-max-steps', c.maxSteps||25);
+  set('s-auto-exec', c.autoExec||'safe'); set('s-web', c.webSearch||'enabled');
+  set('s-active-prov', c.primaryProvider||'anthropic');
+  set('s-cst-url',   c.customEndpointUrl||''); set('s-cst-key', c.customEndpointKey||'');
+  set('s-cst-model', c.customEndpointModel||''); set('s-cst-fmt', c.customEndpointFmt||'openai');
+  // Media keys
+  set('s-stab-key',    c.stabilityKey||'');   set('s-bfl-key',     c.bflKey||'');
+  set('s-ideogram-key',c.ideogramKey||'');    set('s-getimg-key',  c.getimgKey||'');
+  set('s-runway-key',  c.runwayKey||'');      set('s-kling-key',   c.klingKey||'');
+  set('s-luma-key',    c.lumaKey||'');        set('s-pika-key',    c.pikaKey||'');
+  set('s-minimax-key', c.minimaxKey||'');
+}
+
+async function saveSettings() {
+  const g = id => document.getElementById(id)?.value?.trim() || '';
+  S.cfg = {
+    ...S.cfg,
+    anthropicKey: g('s-ant-key'),   anthropicModel:  g('s-ant-model'),
+    openaiKey:    g('s-oai-key'),   openaiModel:     g('s-oai-model'),
+    geminiKey:    g('s-gem-key'),   geminiModel:     g('s-gem-model'),
+    groqKey:      g('s-grq-key'),   groqModel:       g('s-grq-model'),
+    mistralKey:   g('s-mis-key'),   mistralModel:    g('s-mis-model'),
+    togetherKey:  g('s-tog-key'),   togetherModel:   g('s-tog-model'),
+    openrouterKey:g('s-ort-key'),   openrouterModel: g('s-ort-model'),
+    hfToken:      g('s-hf-token'),  hfModel:         g('s-hf-model'),
+    hfInferenceMode:g('s-hf-mode'), hfEndpointUrl:   g('s-hf-endpoint'),
+    ollamaUrl:    g('s-ola-url'),   ollamaModel:     g('s-ola-model'),
+    lmstudioUrl:  g('s-lms-url'),   lmstudioModel:   g('s-lms-model'),
+    maxTokens:    parseInt(g('s-max-tok'))||8192,
+    temperature:  parseFloat(g('s-temp'))||0.3,
+    maxSteps:     parseInt(g('s-max-steps'))||25,
+    autoExec:     g('s-auto-exec'), webSearch: g('s-web'),
+    primaryProvider: g('s-active-prov'),
+    customEndpointUrl:  g('s-cst-url'),   customEndpointKey:   g('s-cst-key'),
+    customEndpointModel:g('s-cst-model'), customEndpointFmt:   g('s-cst-fmt'),
+    stabilityKey: g('s-stab-key'),  bflKey:          g('s-bfl-key'),
+    ideogramKey:  g('s-ideogram-key'), getimgKey:    g('s-getimg-key'),
+    runwayKey:    g('s-runway-key'), klingKey:       g('s-kling-key'),
+    lumaKey:      g('s-luma-key'),  pikaKey:         g('s-pika-key'),
+    minimaxKey:   g('s-minimax-key'),
+  };
+  await nexus.saveConfig(S.cfg);
+  updateStatus(); renderTools();
+  buildMediaProviderSelectors();
+  toast('Settings saved ✓', 'ok');
+}
+
+async function testKey(provider) {
+  toast(`Testing ${provider}…`, 'in');
+  const prev = S.cfg.primaryProvider;
+  S.cfg.primaryProvider = provider;
+  try {
+    const r = await callAI('Reply with the single word: NEXUS_OK', [{ role:'user', content:'NEXUS_OK' }], { maxTokens:20 });
+    toast(`✅ ${provider}: ${r.trim().slice(0,40)}`, 'ok');
+  } catch(e) { toast(`❌ ${provider}: ${e.message.slice(0,80)}`, 'er'); }
+  S.cfg.primaryProvider = prev;
+}
+async function testActive() { await testKey(activeProvider()); }
+
+// ── Plan ───────────────────────────────────────────────────────────────────────
+function renderPlan() {
+  const el = document.getElementById('plan-inner');
+  if (!S.plan.length) { el.innerHTML='<div style="color:var(--text2);font-size:12px;text-align:center;padding:16px 0">No plan yet.</div>'; return; }
+  el.innerHTML = S.plan.map((s,i)=>`
+    <div class="ps">
+      <div class="psi ${s.status}">${s.status==='done'?'✓':s.status==='error'?'✗':s.status==='active'?'▶':i+1}</div>
+      <div><div class="ps-text">${esc(s.text)}</div>${s.detail?`<div class="ps-det">${esc(s.detail)}</div>`:''}</div>
+    </div>`).join('');
+}
+function markPlanDone() { S.plan.forEach(s=>{ if(s.status!=='error') s.status='done'; }); renderPlan(); }
+
+// ── File tree ──────────────────────────────────────────────────────────────────
+async function rfTree() {
+  const files = await nexus.listFiles();
+  renderTree(files, document.getElementById('ftree'));
+}
+function renderTree(items, container) {
+  if (!container) return;
+  container.innerHTML = '';
+  if (!items?.length) { container.innerHTML='<div style="color:var(--text3);font-size:11px">(empty)</div>'; return; }
+  for (const i of items) {
+    const row = document.createElement('div');
+    row.className = `fi ${i.type}`;
+    row.innerHTML = `<span>${i.type==='dir'?'📁':fIcon(i.name)}</span><span>${esc(i.name)}</span>`;
+    if (i.type==='file') row.onclick = () => { openEd(i.path, i.name); sv('files'); };
+    container.appendChild(row);
+    if (i.type==='dir' && i.children?.length) {
+      const ch = document.createElement('div'); ch.className='fi-ch';
+      renderTree(i.children, ch); container.appendChild(ch);
+    }
+  }
+}
+
+// ── Files view ─────────────────────────────────────────────────────────────────
+async function rfFiles() {
+  const files = await nexus.listFiles();
+  renderExplorer(files, document.getElementById('file-exp'));
+}
+function renderExplorer(items, box) {
+  box.innerHTML = '';
+  function ri(list, par, d=0) {
+    for (const i of list) {
+      const row=document.createElement('div'); row.className=`fi ${i.type}`; row.style.paddingLeft=(d*13)+'px';
+      row.innerHTML=`<span>${i.type==='dir'?'📁':fIcon(i.name)}</span><span>${esc(i.name)}</span>`;
+      if(i.type==='file') row.onclick=()=>openEd(i.path,i.name);
+      par.appendChild(row);
+      if(i.type==='dir'&&i.children?.length) ri(i.children,par,d+1);
+    }
+  }
+  if(!items?.length){ box.innerHTML='<div style="color:var(--text3);font-size:11px;padding:6px">Empty</div>'; return; }
+  ri(items, box);
+}
+async function openEd(path, name) {
+  S.curFile = path;
+  const c = await nexus.readFile(path);
+  document.getElementById('ed-fn').textContent = name;
+  document.getElementById('ed-ta').value = c || '';
+  document.getElementById('ed-lang').textContent = (name.split('.').pop()||'').toUpperCase();
+}
+async function saveEd() {
+  if (!S.curFile) { toast('No file open','er'); return; }
+  const ok = await nexus.writeFile(S.curFile, document.getElementById('ed-ta').value);
+  if (ok) { toast('Saved ✓','ok'); await rfFiles(); } else toast('Save failed','er');
+}
+async function newFile() {
+  const name = prompt('File name:'); if (!name) return;
+  await nexus.writeFile(`${S.ws}/${name}`, '');
+  await openEd(`${S.ws}/${name}`, name); await rfFiles();
+  toast(`Created: ${name}`,'ok');
+}
+
+// ── Terminal ───────────────────────────────────────────────────────────────────
+async function runTerm() {
+  const el = document.getElementById('tcmd'), cmd = el.value.trim(); if (!cmd) return;
+  S.termHist.unshift(cmd); S.termIdx=-1; el.value='';
+  appendTerm(`$ ${cmd}`, 'cmd');
+  const r = await nexus.execCmd(cmd, S.ws);
+  if (r.stdout) appendTerm(r.stdout,'out');
+  if (r.stderr) appendTerm(r.stderr,'err');
+  if (!r.stdout&&!r.stderr) appendTerm(`exit: ${r.code}`,'inf');
+}
+function appendTerm(text, cls='out') {
+  const box=document.getElementById('term-out'); if(!box) return;
+  const l=document.createElement('div'); l.className=`tl ${cls}`; l.textContent=text;
+  box.appendChild(l); box.scrollTop=box.scrollHeight;
+}
+function clearTerm() { const b=document.getElementById('term-out'); if(b) b.innerHTML=''; }
+async function killAll() { await nexus.killAll(); appendTerm('[All processes killed]','inf'); toast('Killed','ok'); }
+document.getElementById('tcmd').addEventListener('keydown', e=>{
+  if(e.key==='ArrowUp'){S.termIdx=Math.min(S.termIdx+1,S.termHist.length-1);e.target.value=S.termHist[S.termIdx]||'';}
+  if(e.key==='ArrowDown'){S.termIdx=Math.max(S.termIdx-1,-1);e.target.value=S.termIdx===-1?'':S.termHist[S.termIdx];}
+  if(e.key==='Enter') runTerm();
+});
+
+// ── App Doctor ─────────────────────────────────────────────────────────────────
+async function runDoctor() {
+  document.getElementById('doctor-results').innerHTML = '<div style="color:var(--text2);font-size:12px">Running checks…</div>';
+  await Doctor.run(S.ws);
+}
+async function runAiDoctor() {
+  if (!activeKey()) { toast('No API key','er'); return; }
+  toast('Running AI deep analysis…','in');
+  try {
+    const analysis = await Doctor.aiAnalyze(S.ws, callAI);
+    const box = document.getElementById('doctor-results');
+    const el = document.createElement('div');
+    el.className = 'doc-ai-result';
+    el.innerHTML = `<div style="font-size:12px;font-weight:700;color:var(--accent2);margin-bottom:8px">🤖 AI Deep Analysis</div>${esc(analysis)}`;
+    box.appendChild(el);
+  } catch(e) { toast(`Analysis failed: ${e.message}`,'er'); }
+}
+
+// ── Media Generation ───────────────────────────────────────────────────────────
+let currentMediaTab = 'image';
+
+function setMediaTab(tab) {
+  currentMediaTab = tab;
+  document.querySelectorAll('.media-tab').forEach(t => t.classList.remove('on'));
+  document.querySelector(`[data-mt="${tab}"]`)?.classList.add('on');
+  document.querySelectorAll('.media-pane').forEach(p => p.classList.remove('on'));
+  document.getElementById(`mp-${tab}`)?.classList.add('on');
+}
+
+function buildMediaProviderSelectors() {
+  // Image providers
+  const imgSel = document.getElementById('img-prov-sel');
+  if (imgSel) {
+    const providers = Object.entries(Media.IMAGE_PROVIDERS);
+    imgSel.innerHTML = providers.map(([k,p])=>`
+      <div class="prov-opt ${k===S.imgProvider?'on':''}" onclick="selectImgProv('${k}','${p.name}')" title="${p.name}">
+        ${p.name.split('(')[0].trim().slice(0,18)}
+      </div>`).join('');
+  }
+  // Video providers
+  const vidSel = document.getElementById('vid-prov-sel');
+  if (vidSel) {
+    const providers = Object.entries(Media.VIDEO_PROVIDERS);
+    vidSel.innerHTML = providers.map(([k,p])=>`
+      <div class="prov-opt ${k===S.vidProvider?'on':''}" onclick="selectVidProv('${k}')" title="${p.name}">
+        ${p.name.split('(')[0].trim().slice(0,18)}
+      </div>`).join('');
+  }
+  updateImgProviderOptions();
+}
+
+function selectImgProv(key) {
+  S.imgProvider = key;
+  document.querySelectorAll('#img-prov-sel .prov-opt').forEach(e=>e.classList.remove('on'));
+  event.target.classList.add('on');
+  updateImgProviderOptions();
+}
+function selectVidProv(key) {
+  S.vidProvider = key;
+  document.querySelectorAll('#vid-prov-sel .prov-opt').forEach(e=>e.classList.remove('on'));
+  event.target.classList.add('on');
+}
+
+function updateImgProviderOptions() {
+  const prov = Media.IMAGE_PROVIDERS[S.imgProvider];
+  if (!prov) return;
+  // Update size options
+  const sizeEl = document.getElementById('img-size');
+  if (sizeEl) sizeEl.innerHTML = (prov.sizes||['1024x1024']).map(s=>`<option>${s}</option>`).join('');
+  // Show/hide style/quality (DALL-E 3 only)
+  const sw = document.getElementById('img-style-wrap'), qw = document.getElementById('img-quality-wrap');
+  if (sw) sw.style.display = S.imgProvider==='dalle3' ? '' : 'none';
+  if (qw) qw.style.display = S.imgProvider==='dalle3' ? '' : 'none';
+  // Show HF model field only for HF
+  const hfm = document.querySelector('.mfield:has(#img-hf-model)');
+  // Steps range label
+  const stepsEl = document.getElementById('img-steps');
+  if (stepsEl) stepsEl.addEventListener('input', ()=>{ const l=document.getElementById('img-steps-label'); if(l) l.textContent=stepsEl.value; });
+}
+
+function getApiKeyFor(providerKey) {
+  const provObj = Media.IMAGE_PROVIDERS[providerKey] || Media.VIDEO_PROVIDERS[providerKey];
+  if (!provObj) return '';
+  const keyMap = {
+    openaiKey:S.cfg.openaiKey, stabilityKey:S.cfg.stabilityKey, bflKey:S.cfg.bflKey,
+    hfToken:S.cfg.hfToken, togetherKey:S.cfg.togetherKey, ideogramKey:S.cfg.ideogramKey,
+    getimgKey:S.cfg.getimgKey, runwayKey:S.cfg.runwayKey, klingKey:S.cfg.klingKey,
+    lumaKey:S.cfg.lumaKey, pikaKey:S.cfg.pikaKey, minimaxKey:S.cfg.minimaxKey,
+    hailuoKey:S.cfg.hailuoKey,
+  };
+  return keyMap[provObj.key] || '';
+}
+
+async function generateImage() {
+  const prompt = document.getElementById('img-prompt')?.value?.trim();
+  if (!prompt) { toast('Enter a prompt','er'); return; }
+  const prov = S.imgProvider;
+  const apiKey = getApiKeyFor(prov);
+  if (!apiKey) { toast(`No API key for ${Media.IMAGE_PROVIDERS[prov]?.name}. Add in Settings → Media Keys.`,'er'); return; }
+  showGenProgress(true, 'Generating image…');
+  try {
+    const cfg = {
+      prompt,
+      negPrompt:  document.getElementById('img-neg-prompt')?.value || '',
+      size:       document.getElementById('img-size')?.value || '1024x1024',
+      style:      document.getElementById('img-style')?.value || 'vivid',
+      quality:    document.getElementById('img-quality')?.value || 'standard',
+      steps:      parseInt(document.getElementById('img-steps')?.value || '30'),
+      hfImageModel: document.getElementById('img-hf-model')?.value || '',
+      apiKey,
+    };
+    const result = await Media.generate('image', prov, cfg, msg => showGenProgress(true, msg));
+    showGenProgress(false);
+    displayImageResult(result, prompt);
+  } catch(e) {
+    showGenProgress(false);
+    toast(`Generation failed: ${e.message}`,'er');
+    errMsg(`Image generation error: ${e.message}`);
+  }
+}
+
+async function generateVideo() {
+  const prompt = document.getElementById('vid-prompt')?.value?.trim();
+  if (!prompt) { toast('Enter a prompt','er'); return; }
+  const prov = S.vidProvider;
+  const apiKey = getApiKeyFor(prov);
+  if (!apiKey) { toast(`No API key for ${Media.VIDEO_PROVIDERS[prov]?.name}. Add in Settings → Media Keys.`,'er'); return; }
+  showGenProgress(true, 'Submitting video generation job…');
+  try {
+    let imageB64 = null;
+    const fileInput = document.getElementById('vid-image-input');
+    if (fileInput?.files?.[0]) {
+      imageB64 = await fileToBase64(fileInput.files[0]);
+    }
+    const cfg = { prompt, duration: parseInt(document.getElementById('vid-duration')?.value || '5'), imageB64, apiKey };
+    const result = await Media.generate('video', prov, cfg, msg => showGenProgress(true, msg));
+    showGenProgress(false);
+    displayVideoResult(result, prompt);
+  } catch(e) {
+    showGenProgress(false);
+    toast(`Video generation failed: ${e.message}`,'er');
+    errMsg(`Video error: ${e.message}`);
+  }
+}
+
+function fileToBase64(file) {
+  return new Promise((res,rej)=>{
+    const r = new FileReader();
+    r.onload = e => res(e.target.result.split(',')[1]);
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
+}
+
+function showGenProgress(on, msg='') {
+  const el = document.getElementById('gen-progress');
+  const m  = document.getElementById('gen-progress-msg');
+  if (!el) return;
+  el.className = on ? 'gen-progress on' : 'gen-progress';
+  if (m && msg) m.textContent = msg;
+}
+
+function displayImageResult(result, prompt) {
+  const box = document.getElementById('gen-result');
+  if (!box) return;
+  box.style.display = '';
+  let src = '';
+  if (result.b64)     src = `data:image/png;base64,${result.b64}`;
+  else if (result.url) src = result.url;
+  else if (result.dataUrl) src = result.dataUrl;
+  box.innerHTML = `
+    <img src="${src}" alt="${esc(prompt)}" style="max-width:100%;border-radius:6px;margin-bottom:10px" onerror="this.src='data:image/svg+xml,<svg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'200\\' height=\\'200\\'><rect width=\\'200\\' height=\\'200\\' fill=\\'%231c1c2a\\'/><text x=\\'50%\\' y=\\'50%\\' fill=\\'%238888aa\\' text-anchor=\\'middle\\' dy=\\'.3em\\'>Preview N/A</text></svg>'">
+    ${result.revisedPrompt ? `<div style="font-size:11px;color:var(--text2);margin-bottom:8px;font-style:italic">Revised: ${esc(result.revisedPrompt.slice(0,150))}</div>` : ''}
+    <div style="display:flex;gap:6px;justify-content:center">
+      ${src ? `<a href="${src}" download="nexus-gen-${Date.now()}.png" class="btn btn-pri btn-sm">⬇️ Download</a>` : ''}
+      <button class="btn btn-sec btn-sm" onclick="saveGenToWorkspace('${encodeURIComponent(src)}')">💾 Save to Workspace</button>
+    </div>`;
+  // Add to history
+  addToGenHistory(src, 'image', prompt);
+  toast('Image generated!','ok');
+}
+
+function displayVideoResult(result, prompt) {
+  const box = document.getElementById('gen-result');
+  if (!box) return;
+  box.style.display = '';
+  const src = result.url || '';
+  box.innerHTML = src
+    ? `<video src="${src}" controls style="max-width:100%;border-radius:6px;margin-bottom:10px"></video>
+       <div style="display:flex;gap:6px;justify-content:center"><a href="${src}" download="nexus-video-${Date.now()}.mp4" class="btn btn-pri btn-sm">⬇️ Download</a></div>`
+    : `<div style="color:var(--yellow);font-size:13px">Video generated (no preview URL). Check provider dashboard.</div>`;
+  addToGenHistory(src, 'video', prompt);
+  toast('Video generated!','ok');
+}
+
+async function saveGenToWorkspace(encodedSrc) {
+  const src = decodeURIComponent(encodedSrc);
+  const dir = `${S.ws}/generated`;
+  await nexus.mkdir(dir);
+  const fn = `image-${Date.now()}.png`;
+  // Extract base64 if data URL
+  if (src.startsWith('data:')) {
+    const b64 = src.split(',')[1];
+    await nexus.writeFile(`${dir}/${fn}`, b64);
+    toast(`Saved: generated/${fn}`,'ok');
+  } else {
+    toast('Remote URL — use Download button instead','in');
+  }
+}
+
+function addToGenHistory(src, type, prompt) {
+  if (!src) return;
+  S.genHistory.unshift({ src, type, prompt });
+  const box = document.getElementById('gen-history');
+  const wrap = document.getElementById('gen-history-wrap');
+  if (!box) return;
+  if (wrap) wrap.style.display = '';
+  box.innerHTML = S.genHistory.slice(0,20).map(h=>`
+    <div class="gen-hist-item" title="${esc(h.prompt)}">
+      ${h.type==='image' ? `<img src="${h.src}" alt="${esc(h.prompt)}">` : `<video src="${h.src}"></video>`}
+    </div>`).join('');
+}
+
+// ── Connectors ─────────────────────────────────────────────────────────────────
+function renderConnectors(filter) {
+  Connectors.renderCatalog(document.getElementById('connectors-grid'), filter);
+  const connectedCount = Connectors.CATALOG.filter(c=>Connectors.isConnected(c.id)).length;
+  const el = document.getElementById('conn-connected-count');
+  if (el) el.textContent = `✓ ${connectedCount} Connected`;
+  const cnt = document.getElementById('conn-count');
+  if (cnt) cnt.textContent = `${Connectors.CATALOG.length} connectors · ${connectedCount} connected`;
+}
+function filterConnectors(q) { renderConnectors(q); }
+function showConnected() {
+  const box = document.getElementById('connectors-grid');
+  if (!box) return;
+  const connected = Connectors.CATALOG.filter(c=>Connectors.isConnected(c.id));
+  if (!connected.length) { box.innerHTML='<div style="color:var(--text2);font-size:13px;padding:20px">No connectors connected yet. Browse the catalog and click Connect.</div>'; return; }
+  Connectors.renderCatalog(box, '');
+}
+
+// ── Skills ─────────────────────────────────────────────────────────────────────
+let currentSkillCat = 'All';
+
+function renderSkills(filter, cat) {
+  currentSkillCat = cat || 'All';
+  Skills.render(document.getElementById('skills-grid'), filter, currentSkillCat);
+  const total   = Skills.CATALOG.length;
+  const enabled = Skills.getEnabled().length;
+  const cnt = document.getElementById('skills-count');
+  if (cnt) cnt.textContent = `${total} skills · ${enabled} enabled`;
+  renderSkillCatButtons();
+  renderActiveSkillsMini();
+}
+
+function renderSkillCatButtons() {
+  const box = document.getElementById('skill-cats');
+  if (!box) return;
+  const cats = ['All', ...Skills.getCategories()];
+  box.innerHTML = cats.map(c=>`<div class="scat-btn ${c===currentSkillCat?'on':''}" onclick="filterSkillsCat('${c}')">${c}</div>`).join('');
+}
+
+function filterSkills(q) { renderSkills(q, currentSkillCat); }
+function filterSkillsCat(cat) { renderSkills(document.getElementById('skills-search')?.value||'', cat); }
+
+function renderActiveSkillsMini() {
+  const box = document.getElementById('active-skills-mini');
+  if (!box) return;
+  const active = Skills.getEnabled();
+  box.innerHTML = active.length
+    ? active.map(s=>`<span style="font-size:10px;padding:2px 7px;background:var(--bg3);border:1px solid var(--accent);border-radius:99px;color:var(--accent2)">${s.icon} ${s.name}</span>`).join('')
+    : '<span style="font-size:11px;color:var(--text3)">No skills enabled. Browse Skills to add.</span>';
+}
+
+// ── HuggingFace search ─────────────────────────────────────────────────────────
+let hfActiveFilter = 'text-generation';
+function hfFilt(el) {
+  document.querySelectorAll('.hf-ft').forEach(f=>f.classList.remove('on'));
+  el.classList.add('on');
+  hfActiveFilter = el.dataset.hfF || '';
+}
+
+async function hfSearch() {
+  const q   = document.getElementById('hf-q')?.value?.trim() || '';
+  const box = document.getElementById('hf-results');
+  box.innerHTML = '<div style="color:var(--text2);font-size:12px">Searching…</div>';
+  try {
+    let url = `https://huggingface.co/api/models?search=${encodeURIComponent(q)}&limit=20&sort=downloads&direction=-1`;
+    if (hfActiveFilter && hfActiveFilter !== 'gguf') url += `&pipeline_tag=${encodeURIComponent(hfActiveFilter)}`;
+    if (hfActiveFilter === 'gguf') url += '&tags=gguf';
+    const hdrs = { 'Accept':'application/json' };
+    if (S.cfg.hfToken) hdrs['Authorization'] = `Bearer ${S.cfg.hfToken}`;
+    const r = await nexus.httpRequest({ method:'GET', url, headers:hdrs, timeout:15 });
+    if (r.status!==200) { box.innerHTML=`<div style="color:var(--red)">Search failed: ${r.status}</div>`; return; }
+    const models = r.data;
+    if (!models?.length) { box.innerHTML='<div style="color:var(--text2);font-size:12px">No results.</div>'; return; }
+    box.innerHTML = models.map(m=>`
+      <div class="hf-card" onclick="selectHfModel('${esc(m.id)}')">
+        <div class="hf-card-title">🤗 ${esc(m.id)} ${(m.tags||[]).slice(0,3).map(t=>`<span class="hf-tag">${esc(t)}</span>`).join('')}</div>
+        <div class="hf-card-meta">${[m.downloads?`⬇️${fmtNum(m.downloads)}`:'',m.likes?`❤️${fmtNum(m.likes)}`:''].filter(Boolean).join(' · ')}</div>
+        <div class="hf-card-actions">
+          <button class="btn btn-hf btn-sm" onclick="event.stopPropagation();useHfModel('${esc(m.id)}')">Use via API</button>
+          <button class="btn btn-sec btn-sm" onclick="event.stopPropagation();prefillDownload('${esc(m.id)}')">⬇️ Download</button>
+        </div>
+      </div>`).join('');
+  } catch(e) { box.innerHTML=`<div style="color:var(--red)">Error: ${esc(e.message)}</div>`; }
+}
+
+function selectHfModel(id) { const e=document.getElementById('s-hf-model'); if(e) e.value=id; toast(`Selected: ${id}`,'ok'); }
+function useHfModel(id)   { selectHfModel(id); const p=document.getElementById('s-active-prov'); if(p) p.value='huggingface'; toast(`Using HF: ${id}`,'ok'); }
+function prefillDownload(repoId) { const e=document.getElementById('s-dl-repo'); if(e) e.value=repoId; toast(`Enter filename and click Download`,'in'); }
+
+async function startDownload() {
+  const repo = document.getElementById('s-dl-repo')?.value?.trim();
+  const file = document.getElementById('s-dl-file')?.value?.trim();
+  if (!repo||!file) { toast('Enter repo ID and filename','er'); return; }
+  document.getElementById('dl-progress')?.classList.add('on');
+  toast(`Downloading ${file}…`,'in');
+  const r = await nexus.hfDownload({ repoId:repo, filename:file, hfToken:S.cfg.hfToken });
+  if (r.cached)    toast(`Already downloaded: ${file}`,'ok');
+  else if (r.success) toast(`✅ Downloaded: ${file}`,'ok');
+  else toast(`❌ Failed: ${r.error}`,'er');
+  refreshLocalModels();
+}
+
+async function refreshLocalModels() {
+  const models = await nexus.listLocalModels();
+  const box = document.getElementById('local-models-list');
+  if (!box) return;
+  if (!models?.length) { box.innerHTML='<div style="color:var(--text2);font-size:12px">None downloaded yet.</div>'; return; }
+  box.innerHTML = models.map(m=>`
+    <div class="lm-card">
+      <div class="lm-info"><div class="lm-name">${esc(m.file)}</div><div class="lm-meta">${esc(m.repo)} · ${fmtBytes(m.size)}</div></div>
+      <div class="lm-actions">
+        <button class="btn btn-sec btn-sm" onclick="useLocalModel('${esc(m.path)}','${esc(m.file)}')">Use</button>
+        <button class="btn btn-red btn-sm" onclick="delLocal('${esc(m.path)}')">✕</button>
+      </div>
+    </div>`).join('');
+}
+function useLocalModel(path, name) { const e=document.getElementById('s-lms-model'); if(e) e.value=path; st('local'); toast(`Set in LM Studio: ${name}`,'ok'); }
+async function delLocal(path) { if(!confirm(`Delete ${path}?`)) return; await nexus.deleteFile(path); refreshLocalModels(); toast('Deleted','ok'); }
+
+// ── Ollama ─────────────────────────────────────────────────────────────────────
+async function loadOllamaModels() {
+  const url = document.getElementById('s-ola-url')?.value || 'http://localhost:11434';
+  const r = await nexus.ollamaList(url);
+  const box = document.getElementById('ollama-models');
+  if (!box) return;
+  if (!r?.models?.length) { box.innerHTML='<div style="color:var(--text2);font-size:12px;margin-top:6px">No Ollama models detected. Is Ollama running?</div>'; return; }
+  box.innerHTML = r.models.map(m=>`
+    <div class="ol-card">
+      <div><div class="ol-name">${esc(m.name)}</div><div class="ol-size">${fmtBytes(m.size||0)}</div></div>
+      <button class="btn btn-grn btn-sm" onclick="selectOllamaModel('${esc(m.name)}')">Use</button>
+    </div>`).join('');
+}
+function selectOllamaModel(name) { const e=document.getElementById('s-ola-model'); if(e) e.value=name; const p=document.getElementById('s-active-prov'); if(p) p.value='ollama'; toast(`Ollama: ${name}`,'ok'); }
+async function installOllama() {
+  // Delegate to the full installer wizard
+  await Installer.installOllamaFull();
+}
+
+async function startOllamaService() {
+  toast('Starting Ollama service…', 'in');
+  sv('terminal');
+  appendTerm('$ ollama serve (background)', 'cmd');
+  // Check if already running first
+  try {
+    const ping = await nexus.httpRequest({ method:'GET', url:'http://localhost:11434', headers:{}, timeout:2 });
+    if (ping.status > 0) { toast('Ollama already running ✓', 'ok'); appendTerm('✅ Ollama already running on :11434', 'inf'); return; }
+  } catch {}
+  // Start it
+  const r = await nexus.execCmd('start /B "" ollama serve', S.ws);
+  appendTerm(r.stdout || 'Service starting…', 'out');
+  if (r.stderr) appendTerm(r.stderr, 'err');
+  // Wait and re-ping
+  await new Promise(res => setTimeout(res, 3000));
+  try {
+    const ping2 = await nexus.httpRequest({ method:'GET', url:'http://localhost:11434', headers:{}, timeout:5 });
+    if (ping2.status > 0) {
+      toast('✅ Ollama service running', 'ok');
+      appendTerm('✅ Ollama running on http://localhost:11434', 'inf');
+    } else { toast('Ollama may still be starting — check terminal', 'in'); }
+  } catch { toast('Could not reach Ollama. Check if it is installed.', 'er'); }
+}
+async function pullOllamaModel() { const n=prompt('Model to pull (e.g. llama3.3):'); if(!n) return; sv('terminal'); appendTerm(`$ ollama pull ${n}`,'cmd'); sysMsg(`Pulling ${n}…`); const r=await nexus.execCmd(`ollama pull ${n}`,S.ws); appendTerm(r.stdout||r.stderr||'Done',r.code===0?'out':'err'); if(r.code===0) toast(`Pulled: ${n}`,'ok'); }
+
+// ── Context ────────────────────────────────────────────────────────────────────
+function saveCtx()  { S.ctx=document.getElementById('ctx-ta')?.value||''; toast('Context saved','ok'); }
+function clearCtx() { S.ctx=''; const e=document.getElementById('ctx-ta'); if(e) e.value=''; toast('Context cleared','ok'); }
+
+// ── Tools panel ────────────────────────────────────────────────────────────────
+const TOOLS_DEF = [
+  {name:'read_file',desc:'Read files from workspace'},{name:'write_file',desc:'Create / overwrite files'},
+  {name:'list_files',desc:'List directory contents'},{name:'delete_file',desc:'Remove files'},
+  {name:'run_command',desc:'Execute shell commands'},{name:'search_web',desc:'Web search (DuckDuckGo)'},
+  {name:'create_plan',desc:'Multi-step plan'},{name:'update_plan',desc:'Track plan progress'},
+  {name:'think',desc:'Internal reasoning'},{name:'ask_user',desc:'Request user input'},
+  {name:'task_complete',desc:'Mark complete'},
+];
+function renderTools() {
+  const el=document.getElementById('tools-list'); if(!el) return;
+  const ok=!!activeKey();
+  el.innerHTML=`<div style="margin-bottom:9px;font-size:11px;color:${ok?'var(--green)':'var(--red)'}">${ok?`✅ ${activeProvider()} — ${getActiveModelName()}`:'❌ No API key — add in Settings'}</div>
+  ${TOOLS_DEF.map(t=>`<div class="te"><div class="te-name"><div class="te-dot"></div>${t.name}</div><div class="te-desc">${t.desc}</div></div>`).join('')}`;
+}
+
+// ── Status ─────────────────────────────────────────────────────────────────────
+function getActiveModelName() {
+  const p = activeProvider();
+  const m = {anthropic:S.cfg.anthropicModel,openai:S.cfg.openaiModel,gemini:S.cfg.geminiModel,groq:S.cfg.groqModel,mistral:S.cfg.mistralModel,together:S.cfg.togetherModel,openrouter:S.cfg.openrouterModel,huggingface:S.cfg.hfModel,ollama:S.cfg.ollamaModel,lmstudio:S.cfg.lmstudioModel,custom:S.cfg.customEndpointModel};
+  return m[p] || '—';
+}
+function updateStatus() {
+  const ok=!!activeKey(), prov=activeProvider(), model=getActiveModelName();
+  const set=(id,v)=>{ const e=document.getElementById(id); if(e) e.textContent=v; };
+  const dot=document.getElementById('sb-dot'); if(dot) dot.className=`sd ${ok?'g':'r'}`;
+  set('sb-txt',    ok?'Connected':'No key');
+  set('sb-prov-si',`${prov} / ${model}`);
+  set('sb-steps',  `Steps: ${S.steps}`);
+  set('sb-tok',    `Tokens: ~${S.tokens.toLocaleString()}`);
+  set('sb-prov',   prov);
+  set('sb-model',  model);
+  set('tb-model',  `${prov} · ${model}`);
+  const hb=document.getElementById('hdr-badge'); if(hb) hb.textContent=`${prov} / ${model}`;
+}
+
+// ── Utilities ──────────────────────────────────────────────────────────────────
+function setRunning(on,lbl) { S.running=on; typing(on,lbl); const s=document.getElementById('send'); if(s) s.disabled=on; }
+const sleep    = ms  => new Promise(r=>setTimeout(r,ms));
+const estTok   = t   => Math.ceil((t||'').length/3.5);
+const fmtBytes = b   => { b=Number(b); if(!b) return '0B'; if(b<1024) return b+'B'; if(b<1e6) return (b/1024).toFixed(1)+'KB'; if(b<1e9) return (b/1e6).toFixed(1)+'MB'; return (b/1e9).toFixed(2)+'GB'; };
+const fmtNum   = n   => Number(n).toLocaleString();
+const fIcon    = name => { const e=(name.split('.').pop()||'').toLowerCase(); return {js:'🟨',ts:'🔷',jsx:'⚛️',tsx:'⚛️',py:'🐍',html:'🌐',css:'🎨',scss:'🎨',json:'📋',md:'📝',sh:'⚡',bat:'⚡',txt:'📄',png:'🖼️',jpg:'🖼️',gif:'🖼️',svg:'🎨',gitignore:'🙈',env:'🔒',lock:'🔒',rs:'🦀',go:'🐹',rb:'💎',java:'☕',c:'©️',cpp:'🔧',yaml:'📐',yml:'📐',toml:'📐',gguf:'🤗',safetensors:'🤗',mp4:'🎬',webm:'🎬'}[e]||'📄'; };
+
+function toast(msg, type='in') {
+  const c=document.getElementById('toast-c');
+  const el=document.createElement('div'); el.className=`toast ${type}`; el.textContent=msg;
+  c.appendChild(el); setTimeout(()=>el.remove(),4000);
+}
+
+// Expose toast globally (used by Doctor module)
+window.toast = toast;
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   BUG-FIX PATCH — HuggingFace model search, detail cards, selection panel
+═══════════════════════════════════════════════════════════════════════════ */
+
+// ── HF model detail cache ──────────────────────────────────────────────────────
+const HF_CACHE = {};
+
+// ── Fixed hfSearch — replaces the broken one above ────────────────────────────
+async function hfSearch() {
+  const q   = (document.getElementById('hf-q')?.value || '').trim();
+  const box = document.getElementById('hf-results');
+  if (!box) return;
+  box.innerHTML = '<div style="color:var(--text2);font-size:12px;padding:8px">🔍 Searching HuggingFace…</div>';
+
+  try {
+    // Build URL — filter by active tag
+    let apiUrl = `https://huggingface.co/api/models?limit=24&sort=downloads&direction=-1&full=false`;
+    if (q) apiUrl += `&search=${encodeURIComponent(q)}`;
+    if (hfActiveFilter && hfActiveFilter !== '') {
+      if (hfActiveFilter === 'gguf') apiUrl += '&tags=gguf';
+      else apiUrl += `&pipeline_tag=${encodeURIComponent(hfActiveFilter)}`;
+    }
+
+    const hdrs = { 'Accept': 'application/json' };
+    if (S.cfg.hfToken) hdrs['Authorization'] = `Bearer ${S.cfg.hfToken}`;
+
+    const r = await nexus.httpRequest({ method: 'GET', url: apiUrl, headers: hdrs, timeout: 20 });
+
+    if (r.status !== 200) {
+      box.innerHTML = `<div style="color:var(--red);font-size:12px;padding:8px">Search failed (HTTP ${r.status}). Check your HF token or network.</div>`;
+      return;
+    }
+
+    // r.data is a parsed array
+    const models = Array.isArray(r.data) ? r.data : (r.data?._raw ? [] : []);
+    if (!models.length) {
+      box.innerHTML = '<div style="color:var(--text2);font-size:12px;padding:8px">No results found. Try different search terms.</div>';
+      return;
+    }
+
+    box.innerHTML = '';
+    models.forEach(m => {
+      const id       = m.id || m.modelId || '';
+      const dl       = m.downloads    ? `⬇️ ${fmtNum(m.downloads)}`  : '';
+      const lk       = m.likes        ? `❤️ ${fmtNum(m.likes)}`      : '';
+      const pt       = m.pipeline_tag ? `<span class="hf-tag">${esc(m.pipeline_tag)}</span>` : '';
+      const isGGUF   = (m.tags||[]).includes('gguf');
+      const langTags = (m.tags||[]).filter(t => ['pytorch','safetensors','transformers','gguf','gptq','awq','mlx'].includes(t)).slice(0,3).map(t=>`<span class="hf-tag">${t}</span>`).join('');
+
+      const card = document.createElement('div');
+      card.className = 'hf-card';
+      // Use data attribute to avoid escaping issues with IDs containing special chars
+      card.dataset.modelId = id;
+      card.innerHTML = `
+        <div class="hf-card-title">
+          🤗 <span class="hf-model-id">${esc(id)}</span>
+          ${pt} ${langTags}
+        </div>
+        <div class="hf-card-meta">${[dl, lk].filter(Boolean).join('  ')}</div>
+        <div class="hf-card-actions">
+          <button class="btn btn-sec btn-sm hf-info-btn">🔍 Details</button>
+          <button class="btn btn-hf btn-sm hf-use-btn">⚡ Use via API</button>
+          ${isGGUF ? '<button class="btn btn-sec btn-sm hf-dl-btn">⬇️ Download</button>' : ''}
+          <a class="btn btn-sec btn-sm" href="https://huggingface.co/${esc(id)}" target="_blank" style="text-decoration:none">↗ HF Page</a>
+        </div>`;
+
+      // Use event delegation via data attributes — no inline function call strings
+      card.querySelector('.hf-info-btn').addEventListener('click', e => {
+        e.stopPropagation();
+        showHfModelDetail(id);
+      });
+      card.querySelector('.hf-use-btn').addEventListener('click', e => {
+        e.stopPropagation();
+        applyHfModel(id);
+      });
+      const dlBtn = card.querySelector('.hf-dl-btn');
+      if (dlBtn) dlBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        prefillDownloadFromSearch(id);
+      });
+      card.addEventListener('click', () => showHfModelDetail(id));
+
+      box.appendChild(card);
+    });
+
+  } catch(e) {
+    box.innerHTML = `<div style="color:var(--red);font-size:12px;padding:8px">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+// ── Fetch + show full model detail card ────────────────────────────────────────
+async function showHfModelDetail(modelId) {
+  // Show the detail panel
+  let panel = document.getElementById('hf-detail-panel');
+  if (!panel) {
+    panel = buildHfDetailPanel();
+  }
+  panel.style.display = '';
+
+  const content = document.getElementById('hf-detail-content');
+  if (content) content.innerHTML = '<div style="color:var(--text2);font-size:12px;padding:20px;text-align:center">Loading model info…</div>';
+
+  // Highlight selected card
+  document.querySelectorAll('.hf-card').forEach(c => c.style.borderColor = '');
+  document.querySelectorAll('.hf-card').forEach(c => {
+    if (c.dataset.modelId === modelId) c.style.borderColor = 'var(--hf)';
+  });
+
+  try {
+    // Check cache first
+    let info = HF_CACHE[modelId];
+    if (!info) {
+      const hdrs = { 'Accept': 'application/json' };
+      if (S.cfg.hfToken) hdrs['Authorization'] = `Bearer ${S.cfg.hfToken}`;
+
+      // Fetch model metadata
+      const r = await nexus.httpRequest({
+        method: 'GET',
+        url: `https://huggingface.co/api/models/${modelId}`,
+        headers: hdrs,
+        timeout: 15,
+      });
+
+      if (r.status !== 200) {
+        if (content) content.innerHTML = `<div style="color:var(--red);padding:12px">Failed to load model info (HTTP ${r.status}).<br><br><a href="https://huggingface.co/${esc(modelId)}" target="_blank" style="color:var(--hf)">View on HuggingFace ↗</a></div>`;
+        return;
+      }
+      info = r.data;
+      HF_CACHE[modelId] = info;
+    }
+
+    renderHfDetailCard(info, content);
+  } catch(e) {
+    if (content) content.innerHTML = `<div style="color:var(--red);padding:12px">Error loading: ${esc(e.message)}</div>`;
+  }
+}
+
+function buildHfDetailPanel() {
+  // Insert the detail panel into the HF settings pane
+  const parent = document.getElementById('hf-results')?.parentElement;
+  if (!parent) return document.createElement('div');
+
+  const panel = document.createElement('div');
+  panel.id = 'hf-detail-panel';
+  panel.style.cssText = 'display:none;margin-top:14px;background:var(--bg2);border:1px solid var(--hf);border-radius:8px;overflow:hidden';
+  panel.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--bg3);border-bottom:1px solid var(--border)">
+      <span style="font-size:12px;font-weight:700;color:var(--hf)">🤗 Model Details</span>
+      <button style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:16px" onclick="document.getElementById('hf-detail-panel').style.display='none'">✕</button>
+    </div>
+    <div id="hf-detail-content" style="padding:14px;max-height:420px;overflow-y:auto"></div>`;
+  parent.appendChild(panel);
+  return panel;
+}
+
+function renderHfDetailCard(info, container) {
+  if (!container) return;
+
+  const id          = info.id || info.modelId || '—';
+  const author      = info.author || id.split('/')[0] || '—';
+  const pt          = info.pipeline_tag || '—';
+  const dl          = info.downloads    ? fmtNum(info.downloads)  : '—';
+  const likes       = info.likes        ? fmtNum(info.likes)      : '—';
+  const lastMod     = info.lastModified ? new Date(info.lastModified).toLocaleDateString() : '—';
+  const isPrivate   = info.private      ? '🔒 Private' : '🌐 Public';
+  const isGated     = info.gated        ? ' · 🔐 Gated (token required)' : '';
+  const license     = info.cardData?.license || (info.tags||[]).find(t=>t.startsWith('license:'))?.replace('license:','') || '—';
+  const lang        = (info.cardData?.language||[]).slice(0,4).join(', ') || '—';
+  const datasets    = (info.cardData?.datasets||[]).slice(0,3).join(', ') || '—';
+  const arxiv       = (info.tags||[]).find(t=>t.startsWith('arxiv:'));
+  const siblings    = (info.siblings||[]).map(s=>s.rfilename||s.name||'').filter(Boolean);
+  const ggufFiles   = siblings.filter(f=>f.toLowerCase().endsWith('.gguf'));
+  const safeFiles   = siblings.filter(f=>f.toLowerCase().includes('safetensor'));
+  const configFile  = siblings.includes('config.json');
+
+  // Parameter count from tags or safetensors
+  const paramTag    = (info.tags||[]).find(t => /^\d/.test(t) && (t.includes('B') || t.includes('M')));
+  const paramCount  = paramTag || info.safetensors?.parameters
+    ? (paramTag || `${(Object.values(info.safetensors?.parameters||{}).reduce((a,b)=>a+b,0)/1e9).toFixed(1)}B params`)
+    : '—';
+
+  container.innerHTML = `
+    <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:14px">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:15px;font-weight:700;color:var(--text0);word-break:break-all;margin-bottom:4px">${esc(id)}</div>
+        <div style="font-size:11px;color:var(--text2)">by ${esc(author)} · ${isPrivate}${isGated}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:5px;flex-shrink:0">
+        <button class="btn btn-hf btn-sm" onclick="applyHfModel('${esc(id)}')">⚡ Use This Model</button>
+        ${ggufFiles.length ? `<button class="btn btn-sec btn-sm" onclick="prefillDownloadFromSearch('${esc(id)}')">⬇️ Download GGUF</button>` : ''}
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+      ${statBox('Task',        pt)}
+      ${statBox('Parameters',  paramCount)}
+      ${statBox('Downloads',   dl)}
+      ${statBox('Likes',       likes)}
+      ${statBox('License',     license)}
+      ${statBox('Language',    lang !== '—' ? lang : '—')}
+      ${statBox('Last updated',lastMod)}
+      ${statBox('Trained on',  datasets !== '—' ? datasets : '—')}
+    </div>
+
+    ${arxiv ? `<div style="margin-bottom:10px"><a href="https://arxiv.org/abs/${arxiv.replace('arxiv:','')}" target="_blank" style="color:var(--accent3);font-size:12px">📄 Paper: ${arxiv}</a></div>` : ''}
+
+    ${ggufFiles.length ? `
+      <div style="margin-bottom:12px">
+        <div style="font-size:11px;font-weight:700;color:var(--text1);margin-bottom:6px">📦 GGUF Files (${ggufFiles.length})</div>
+        <div style="display:flex;flex-direction:column;gap:4px;max-height:140px;overflow-y:auto">
+          ${ggufFiles.map(f => `
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:5px 8px;background:var(--bg3);border-radius:4px;border:1px solid var(--border)">
+              <span style="font-size:11px;font-family:var(--mono);color:var(--text0);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f)}</span>
+              <div style="display:flex;gap:5px;flex-shrink:0;margin-left:8px">
+                <button class="btn btn-hf btn-sm" style="padding:2px 7px" onclick="fillDownloadFile('${esc(id)}','${esc(f)}')">⬇️</button>
+              </div>
+            </div>`).join('')}
+        </div>
+      </div>` : ''}
+
+    ${safeFiles.length ? `
+      <div style="margin-bottom:12px">
+        <div style="font-size:11px;font-weight:700;color:var(--text1);margin-bottom:4px">🤗 Safetensors (${safeFiles.length} shards)</div>
+        <div style="font-size:11px;color:var(--text2)">Use via HF Inference API — set model ID above and select HuggingFace as provider.</div>
+      </div>` : ''}
+
+    <div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:8px">
+      <a class="btn btn-sec btn-sm" href="https://huggingface.co/${esc(id)}" target="_blank" style="text-decoration:none">↗ View on HuggingFace</a>
+      ${configFile ? `<a class="btn btn-sec btn-sm" href="https://huggingface.co/${esc(id)}/blob/main/config.json" target="_blank" style="text-decoration:none">📋 config.json</a>` : ''}
+      <button class="btn btn-pri btn-sm" onclick="applyHfModel('${esc(id)}')">⚡ Use in Agent</button>
+    </div>`;
+}
+
+function statBox(label, value) {
+  return `<div style="background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:6px 8px">
+    <div style="font-size:10px;color:var(--text3);margin-bottom:2px;text-transform:uppercase;letter-spacing:.05em">${label}</div>
+    <div style="font-size:12px;color:var(--text0);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(String(value))}">${esc(String(value))}</div>
+  </div>`;
+}
+
+// ── Apply a HF model to the active config ─────────────────────────────────────
+function applyHfModel(id) {
+  // Set the model ID field
+  const modelEl = document.getElementById('s-hf-model');
+  if (modelEl) modelEl.value = id;
+
+  // Switch provider to HuggingFace
+  const provEl = document.getElementById('s-active-prov');
+  if (provEl) provEl.value = 'huggingface';
+
+  // Also update live state
+  S.cfg.hfModel = id;
+  S.cfg.primaryProvider = 'huggingface';
+  updateStatus();
+  renderTools();
+
+  toast(`✅ Model set: ${id}`, 'ok');
+
+  // Flash the model field to confirm
+  if (modelEl) {
+    modelEl.style.borderColor = 'var(--hf)';
+    setTimeout(() => { modelEl.style.borderColor = ''; }, 1500);
+  }
+}
+
+// ── Fill download fields from search result ────────────────────────────────────
+function prefillDownloadFromSearch(repoId) {
+  const repoEl = document.getElementById('s-dl-repo');
+  if (repoEl) repoEl.value = repoId;
+  const fileEl = document.getElementById('s-dl-file');
+  if (fileEl) fileEl.value = '';
+  // Scroll to the download section
+  repoEl?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  toast(`Repo set. Now enter the filename (e.g. model.Q4_K_M.gguf) and click Download`, 'in');
+}
+
+function fillDownloadFile(repoId, filename) {
+  const repoEl = document.getElementById('s-dl-repo');
+  const fileEl = document.getElementById('s-dl-file');
+  if (repoEl) repoEl.value = repoId;
+  if (fileEl) fileEl.value = filename;
+  toast(`Ready to download: ${filename}`, 'ok');
+  // Scroll down to the download button
+  fileEl?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+// ── Provider model detail cards ────────────────────────────────────────────────
+// Shows capability info when user hovers/clicks a model in the provider settings
+const MODEL_DETAILS = {
+  // Anthropic
+  'claude-sonnet-4-6':  { ctx:'200K', strength:'Balanced — best for most tasks', speed:'Fast', cost:'$$' },
+  'claude-opus-5':      { ctx:'200K', strength:'Most capable — complex reasoning, long docs', speed:'Medium', cost:'$$$$' },
+  'claude-sonnet-5':    { ctx:'200K', strength:'Next-gen balance of capability + speed', speed:'Fast', cost:'$$$' },
+  'claude-haiku-4-5':   { ctx:'200K', strength:'Fastest Claude — simple tasks, high volume', speed:'Very fast', cost:'$' },
+  // OpenAI
+  'gpt-4o':             { ctx:'128K', strength:'Best all-around GPT model', speed:'Fast', cost:'$$$' },
+  'gpt-4o-mini':        { ctx:'128K', strength:'Fast and cheap — great for most tasks', speed:'Very fast', cost:'$' },
+  'o3':                 { ctx:'200K', strength:'Best reasoning — math, science, code', speed:'Slow', cost:'$$$$' },
+  'o4-mini':            { ctx:'200K', strength:'Fast reasoning — strong performance at low cost', speed:'Medium', cost:'$$' },
+  'o1':                 { ctx:'128K', strength:'Deep reasoning — complex multi-step problems', speed:'Slow', cost:'$$$$' },
+  // Gemini
+  'gemini-2.0-flash':   { ctx:'1M',   strength:'Best speed/quality ratio, huge context', speed:'Very fast', cost:'$' },
+  'gemini-2.0-pro':     { ctx:'2M',   strength:'Most capable Gemini, largest context window', speed:'Medium', cost:'$$$' },
+  'gemini-1.5-pro':     { ctx:'2M',   strength:'Proven, reliable, massive context', speed:'Medium', cost:'$$' },
+  // Groq
+  'llama-3.3-70b-versatile': { ctx:'128K', strength:'Fastest 70B — near-instant responses', speed:'Ultra fast', cost:'$' },
+  'llama-3.1-8b-instant':    { ctx:'128K', strength:'Smallest Llama — very fast, light tasks', speed:'Ultra fast', cost:'¢' },
+  'mixtral-8x7b-32768':      { ctx:'32K',  strength:'MOE architecture — efficient reasoning', speed:'Fast', cost:'$' },
+  'deepseek-r1-distill-llama-70b': { ctx:'128K', strength:'Reasoning model on Groq speed', speed:'Fast', cost:'$' },
+  // Mistral
+  'mistral-large-latest':  { ctx:'128K', strength:'Best Mistral — multilingual, reasoning', speed:'Medium', cost:'$$' },
+  'codestral-latest':      { ctx:'256K', strength:'Best code model from Mistral', speed:'Fast', cost:'$$' },
+  'mistral-small-latest':  { ctx:'128K', strength:'Efficient, cheap, good for simple tasks', speed:'Fast', cost:'$' },
+  // Together
+  'meta-llama/Llama-3.3-70B-Instruct-Turbo': { ctx:'128K', strength:'Best open model on Together infra', speed:'Fast', cost:'$' },
+  'meta-llama/Llama-3.1-405B-Instruct-Turbo': { ctx:'128K', strength:'Largest open model — top performance', speed:'Medium', cost:'$$' },
+  'deepseek-ai/DeepSeek-R1': { ctx:'128K', strength:'State-of-art reasoning, open weights', speed:'Medium', cost:'$$' },
+  'Qwen/QwQ-32B-Preview':    { ctx:'32K',  strength:'Strong reasoning and math', speed:'Medium', cost:'$' },
+};
+
+function attachModelSelectListeners() {
+  // Attach change listeners to all model selects to show detail cards
+  const selects = ['s-ant-model','s-oai-model','s-gem-model','s-grq-model','s-mis-model','s-tog-model'];
+  selects.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('change', () => showProviderModelCard(el.value, el));
+      // Show on init too
+      el.addEventListener('focus',  () => showProviderModelCard(el.value, el));
+    }
+  });
+}
+
+function showProviderModelCard(modelId, selectEl) {
+  const detail = MODEL_DETAILS[modelId];
+
+  // Find or create card relative to the select
+  let card = selectEl?.parentElement?.parentElement?.querySelector('.model-detail-card');
+  if (!card) {
+    card = document.createElement('div');
+    card.className = 'model-detail-card';
+    card.style.cssText = `
+      margin-top:6px;padding:8px 10px;background:var(--bg3);
+      border:1px solid var(--border2);border-radius:6px;font-size:11px;
+      display:grid;grid-template-columns:1fr 1fr;gap:5px;`;
+    selectEl?.parentElement?.parentElement?.appendChild(card);
+  }
+
+  if (!detail) {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = 'grid';
+  card.innerHTML = `
+    <div style="grid-column:1/-1;font-weight:700;color:var(--text0);margin-bottom:4px;font-size:12px">
+      ${esc(modelId.split('/').pop())}
+    </div>
+    <div style="color:var(--text2)">Context window</div><div style="color:var(--accent3)">${detail.ctx} tokens</div>
+    <div style="color:var(--text2)">Speed</div><div style="color:var(--green)">${detail.speed}</div>
+    <div style="color:var(--text2)">Cost</div><div style="color:var(--yellow)">${detail.cost}</div>
+    <div style="grid-column:1/-1;color:var(--text1);margin-top:3px;border-top:1px solid var(--border);padding-top:5px">${esc(detail.strength)}</div>`;
+}
+
+// ── Wire up everything on DOM ready ───────────────────────────────────────────
+// Override the old broken versions of selectHfModel and useHfModel
+function selectHfModel(id) { applyHfModel(id); }
+function useHfModel(id)   { applyHfModel(id); }
+
+// Run after initial boot
+setTimeout(() => {
+  attachModelSelectListeners();
+  // Also show card for whichever model is currently selected
+  const selects = ['s-ant-model','s-oai-model','s-gem-model','s-grq-model','s-mis-model','s-tog-model'];
+  selects.forEach(id => {
+    const el = document.getElementById(id);
+    if (el && el.value) showProviderModelCard(el.value, el);
+  });
+}, 500);
+
+// ── Quick HF search helper ─────────────────────────────────────────────────────
+function quickHfSearch(term) {
+  const el = document.getElementById('hf-q');
+  if (el) { el.value = term; }
+  hfSearch();
+}
+
+// ── Override the OLD broken hfSearch (defined earlier) with the fixed one ──────
+// The fixed version above IS the one that will run because JS hoisting doesn't
+// apply to regular function declarations when reassigned — last wins for
+// expressions; but since both are declarations, the LAST one in the file wins.
+// We already have the fixed hfSearch defined above in the patch. Good.
+
+// ── Ensure model select cards re-render when settings tab opened ───────────────
+const _origSt = window.st;
+window.st = function(tab) {
+  if (_origSt) _origSt(tab);
+  if (tab === 'providers') {
+    setTimeout(() => {
+      const selects = ['s-ant-model','s-oai-model','s-gem-model','s-grq-model','s-mis-model','s-tog-model'];
+      selects.forEach(id => {
+        const el = document.getElementById(id);
+        if (el && el.value) showProviderModelCard(el.value, el);
+      });
+    }, 100);
+  }
+};
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   FREE-TIER PROVIDER IMPLEMENTATIONS
+   OpenRouter (free models) · HuggingFace (serverless, no key) · Ollama
+═══════════════════════════════════════════════════════════════════════════ */
+
+// ── OpenRouter with full headers + free model defaults ────────────────────────
+async function callOpenRouter(system, msgs, maxTokens, temperature) {
+  const model  = S.cfg.openrouterModel || FreeTier.OR_FREE_MODELS[0].id;
+  const key    = S.cfg.openrouterKey   || '';
+  const headers = {
+    'Content-Type': 'application/json',
+    'HTTP-Referer': 'https://nexus-agent.app',
+    'X-Title':      'Nexus Agent',
+  };
+  if (key) headers['Authorization'] = `Bearer ${key}`;
+
+  const body = {
+    model,
+    messages: [{ role:'system', content:system }, ...msgs],
+    max_tokens:  Math.min(maxTokens, 4096),  // free models cap at 4096
+    temperature,
+    // Required by OpenRouter for tracking
+    transforms: ['middle-out'],
+  };
+
+  const r = await nexus.httpRequest({
+    method: 'POST',
+    url:    'https://openrouter.ai/api/v1/chat/completions',
+    headers,
+    body,
+    timeout: 60,
+  });
+
+  if (r.status === 401) throw new Error('OpenRouter: Invalid or missing API key. Get a free key at openrouter.ai/keys');
+  if (r.status === 429) throw new Error('OpenRouter: Rate limit hit. Wait a moment or upgrade at openrouter.ai');
+  if (r.status === 402) throw new Error('OpenRouter: Account needs credits. Use a :free model or add credits.');
+  if (r.status !== 200) throw new Error(`OpenRouter ${r.status}: ${r.data?.error?.message || JSON.stringify(r.data).slice(0,120)}`);
+
+  const content = r.data?.choices?.[0]?.message?.content;
+  if (!content) throw new Error(`OpenRouter: Empty response for model ${model}`);
+  return content;
+}
+
+// ── HuggingFace auto-router: tries chat completions then text-gen ──────────────
+async function callHuggingFaceAuto(system, msgs, maxTokens, temperature) {
+  const model   = S.cfg.hfModel || FreeTier.HF_FREE_MODELS[0].id;
+  const token   = S.cfg.hfToken || '';
+  const mode    = S.cfg.hfInferenceMode || 'serverless';
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  // Dedicated endpoint path
+  if (mode === 'dedicated' && S.cfg.hfEndpointUrl) {
+    return callOpenAI(system, msgs, maxTokens, temperature,
+      S.cfg.hfEndpointUrl.replace(/\/v1.*/,''), token, model, '/v1/chat/completions');
+  }
+
+  const baseUrl = `https://api-inference.huggingface.co/models/${model}`;
+
+  // Try chat/completions endpoint first (supported by newer models)
+  const chatUrl = `${baseUrl}/v1/chat/completions`;
+  try {
+    const chatR = await nexus.httpRequest({
+      method: 'POST', url: chatUrl, headers,
+      body: { model, messages:[{role:'system',content:system},...msgs], max_tokens: Math.min(maxTokens,2048), temperature, stream: false },
+      timeout: 90,
+    });
+    if (chatR.status === 200 && chatR.data?.choices?.[0]?.message?.content) {
+      return chatR.data.choices[0].message.content;
+    }
+  } catch {}
+
+  // Fall back to text-generation endpoint (works with all public HF models)
+  const prompt = buildHFPrompt(system, msgs);
+  const r = await nexus.httpRequest({
+    method: 'POST', url: baseUrl, headers,
+    body: {
+      inputs: prompt,
+      parameters: {
+        max_new_tokens:  Math.min(maxTokens, 1024),
+        temperature:     temperature || 0.3,
+        return_full_text: false,
+        do_sample:       temperature > 0,
+        repetition_penalty: 1.1,
+      },
+      options: { wait_for_model: true, use_cache: true },
+    },
+    timeout: 120,  // serverless models may take up to 2 min to cold-start
+  });
+
+  if (r.status === 503) {
+    // Model is loading — return helpful message
+    throw new Error(`HuggingFace: Model "${model}" is loading (cold start). Try again in ~30 seconds.`);
+  }
+  if (r.status === 404) {
+    throw new Error(`HuggingFace: Model "${model}" not found. Check the model ID in Settings → HuggingFace.`);
+  }
+  if (r.status === 401) {
+    throw new Error('HuggingFace: Invalid token. Check Settings → HuggingFace, or use serverless mode (no token needed).');
+  }
+  if (r.status !== 200) {
+    throw new Error(`HuggingFace ${r.status}: ${JSON.stringify(r.data).slice(0,120)}`);
+  }
+
+  const d = r.data;
+  if (Array.isArray(d))        return d[0]?.generated_text || '';
+  if (d?.generated_text)       return d.generated_text;
+  if (d?.[0]?.generated_text)  return d[0].generated_text;
+  throw new Error(`HuggingFace: Unexpected response format: ${JSON.stringify(d).slice(0,100)}`);
+}
+
+// ── Settings: update OR model dropdown to show free models prominently ─────────
+function updateOrModelOptions() {
+  const sel = document.getElementById('s-ort-model-text');
+  if (!sel) return;
+  // The OR model input is a text field — add a datalist for free model suggestions
+  let dl = document.getElementById('or-free-models-list');
+  if (!dl) {
+    dl = document.createElement('datalist');
+    dl.id = 'or-free-models-list';
+    document.body.appendChild(dl);
+    sel.setAttribute('list', 'or-free-models-list');
+  }
+  dl.innerHTML = FreeTier.OR_FREE_MODELS.map(m =>
+    `<option value="${m.id}">${m.name} (free)</option>`
+  ).join('');
+}
+
+// ── Populate settings — ensure free defaults show correctly ───────────────────
+const _origPopulateSettings = populateSettings;
+function populateSettings() {
+  _origPopulateSettings();
+  // Ensure OR model field shows current model (including :free suffix)
+  const ortModel = document.getElementById('s-ort-model');
+  if (ortModel) ortModel.value = S.cfg.openrouterModel || FreeTier.OR_FREE_MODELS[0].id;
+  // Ensure HF mode shows serverless when no key
+  const hfMode = document.getElementById('s-hf-mode');
+  if (hfMode && !S.cfg.hfToken) hfMode.value = 'serverless';
+  // Update the OR datalist suggestions
+  updateOrModelOptions();
+}
+
+// ── Status bar: show "Free" badge when using free tier ───────────────────────
+const _origUpdateStatus = updateStatus;
+function updateStatus() {
+  _origUpdateStatus();
+  const prov  = activeProvider();
+  const key   = S.cfg.openrouterKey || S.cfg.hfToken || '';
+  const isFree = (prov === 'openrouter' && (!key || (S.cfg.openrouterModel||'').includes(':free')))
+               || (prov === 'huggingface' && (!S.cfg.hfToken || S.cfg.hfInferenceMode === 'serverless'))
+               || prov === 'ollama'
+               || prov === 'lmstudio';
+
+  const badge = document.getElementById('free-tier-badge');
+  if (isFree && !badge) {
+    const bar = document.getElementById('sb-bar');
+    if (bar) {
+      const b = document.createElement('div');
+      b.id = 'free-tier-badge';
+      b.className = 'si';
+      b.innerHTML = '<span style="background:#052e16;color:var(--green);border:1px solid #14532d;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:700">FREE TIER</span>';
+      bar.insertBefore(b, bar.firstChild);
+    }
+  } else if (!isFree && badge) {
+    badge.remove();
+  }
+}
+
+// Run on load
+setTimeout(() => updateOrModelOptions(), 600);
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   OLLAMA MODEL BROWSER — categorized with multimodal + uncensored
+═══════════════════════════════════════════════════════════════════════════ */
+
+// ── Full Ollama model browser ──────────────────────────────────────────────────
+function renderOllamaModelBrowser() {
+  const box = document.getElementById('ollama-model-browser');
+  if (!box) return;
+
+  const cats = Object.keys(FreeTier.OLLAMA_MODELS);
+  let currentCat = 'text';
+
+  function renderCat(cat) {
+    currentCat = cat;
+    const models = FreeTier.OLLAMA_MODELS[cat] || [];
+    box.innerHTML = `
+      <div style="display:flex;gap:5px;margin-bottom:10px;flex-wrap:wrap">
+        ${cats.map(c=>`<button class="btn ${c===cat?'btn-pri':'btn-sec'} btn-sm" onclick="window._ollCat='${c}';renderOllamaModelBrowser()">${{text:'📝 Text',vision:'👁️ Vision',uncensored:'🔓 Uncensored',code:'💻 Code'}[c]||c}</button>`).join('')}
+      </div>
+      <div style="display:flex;flex-direction:column;gap:5px;max-height:260px;overflow-y:auto">
+        ${models.map(m=>`
+          <div style="display:flex;align-items:center;gap:8px;padding:7px 9px;background:var(--bg3);border:1px solid var(--border);border-radius:5px">
+            <div style="flex:1;min-width:0">
+              <div style="font-size:12px;font-weight:600;color:var(--text0);font-family:var(--mono)">${m.id}</div>
+              <div style="font-size:10px;color:var(--text2);margin-top:1px">${m.name} · ${m.size} · ${m.note}</div>
+            </div>
+            <div style="display:flex;gap:4px;flex-shrink:0">
+              <button class="btn btn-grn btn-sm" onclick="selectAndPullOllamaModel('${m.id}')">Pull + Use</button>
+              <button class="btn btn-sec btn-sm" onclick="useInstalledOllama('${m.id}')">Use</button>
+            </div>
+          </div>`).join('')}
+      </div>`;
+  }
+
+  // Read current category from global (set by button clicks)
+  renderCat(window._ollCat || 'text');
+  // Override global to update UI
+  window.renderOllamaModelBrowser = () => renderCat(window._ollCat || currentCat);
+}
+
+async function selectAndPullOllamaModel(id) {
+  // Set model, switch to terminal, pull it
+  S.cfg.ollamaModel     = id;
+  S.cfg.primaryProvider = 'ollama';
+  await nexus.saveConfig(S.cfg);
+  populateSettings(); updateStatus(); renderTools();
+  sv('terminal');
+  appendTerm(`$ ollama pull ${id}`, 'cmd');
+  toast(`Pulling ${id}… check Terminal`, 'in');
+  sysMsg(`🦙 Pulling Ollama model: ${id}\nThis may take several minutes (~${FreeTier.OLLAMA_ALL.find(m=>m.id===id)?.size||'?'})…`);
+  const r = await nexus.execCmd(`ollama pull ${id}`, S.ws);
+  appendTerm(r.stdout||'', 'out');
+  if (r.stderr) appendTerm(r.stderr, 'err');
+  if (r.code===0) {
+    toast(`✅ ${id} ready!`, 'ok');
+    sysMsg(`✅ Model ready: ${id} — switch to Agent view and start chatting!`);
+    await loadOllamaModels();
+  } else {
+    toast(`Pull failed — is Ollama installed and running?`, 'er');
+  }
+}
+
+function useInstalledOllama(id) {
+  const el = document.getElementById('s-ola-model');
+  if (el) el.value = id;
+  S.cfg.ollamaModel = id;
+  S.cfg.primaryProvider = 'ollama';
+  const p = document.getElementById('s-active-prov');
+  if (p) p.value = 'ollama';
+  updateStatus(); renderTools();
+  toast(`Using Ollama: ${id}`, 'ok');
+}
+
+// ── Enhanced Ollama model detection — show categorized available models ─────────
+async function loadOllamaModels() {
+  const url = document.getElementById('s-ola-url')?.value || S.cfg.ollamaUrl || 'http://localhost:11434';
+  const r = await nexus.ollamaList(url);
+  const box = document.getElementById('ollama-models');
+  if (!box) return;
+
+  if (!r?.models?.length) {
+    box.innerHTML = `
+      <div style="color:var(--text2);font-size:12px;margin-top:6px;line-height:1.6">
+        No Ollama models detected.<br>
+        Is Ollama running? Click <b>▶ Start Service</b> or <b>🦙 Full Ollama Setup</b>.<br>
+        <a href="https://ollama.ai/library" target="_blank" style="color:var(--accent3)">Browse all Ollama models →</a>
+      </div>`;
+    // Render the model browser below regardless
+    renderOllamaModelBrowser();
+    return;
+  }
+
+  // Show installed models
+  const installed = r.models.map(m => ({
+    name: m.name,
+    size: fmtBytes(m.size||0),
+    details: m.details?.parameter_size || '',
+    isVision: (m.name||'').includes('llava')||(m.name||'').includes('vision')||(m.name||'').includes('moondream')||(m.name||'').includes('bakllava')||(m.name||'').includes('minicpm-v'),
+    isUncensored: (m.name||'').includes('dolphin')||(m.name||'').includes('hermes')||(m.name||'').includes('uncensored')||(m.name||'').includes('wizard-vicuna')||(m.name||'').includes('orca-mini'),
+  }));
+
+  box.innerHTML = `
+    <div style="font-size:11px;color:var(--green);margin-bottom:7px">✅ ${installed.length} model${installed.length!==1?'s':''} installed</div>
+    ${installed.map(m=>`
+      <div class="ol-card">
+        <div>
+          <div class="ol-name">${esc(m.name)} ${m.isVision?'<span style="font-size:9px;background:#1f1400;color:var(--hf);border:1px solid #4a3000;border-radius:99px;padding:1px 5px">👁️ vision</span>':''} ${m.isUncensored?'<span style="font-size:9px;background:#1a0a0a;color:var(--red);border:1px solid #4a1515;border-radius:99px;padding:1px 5px">🔓 uncensored</span>':''}</div>
+          <div class="ol-size">${m.size}${m.details?' · '+m.details:''}</div>
+        </div>
+        <button class="btn btn-grn btn-sm" onclick="selectOllamaModel('${esc(m.name)}')">Use</button>
+      </div>`).join('')}`;
+  renderOllamaModelBrowser();
+}
+
+// ── Multimodal image input support for agent ──────────────────────────────────
+// Adds vision capability to chat — attach image → pass as base64 to vision models
+let pendingImageB64 = null;
+let pendingImageMime = 'image/jpeg';
+
+function setupImageAttach() {
+  // Check if there's already an attach button
+  if (document.getElementById('img-attach-btn')) return;
+  const inpRow = document.getElementById('inp-row');
+  if (!inpRow) return;
+  const btn = document.createElement('button');
+  btn.id = 'img-attach-btn';
+  btn.className = 'ihdr-btn';
+  btn.title = 'Attach image (for vision models)';
+  btn.style.cssText = 'flex-shrink:0;width:38px;height:38px;border-radius:var(--r)';
+  btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/></svg>`;
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file'; fileInput.accept = 'image/*'; fileInput.style.display = 'none';
+  fileInput.id = 'chat-img-input';
+  fileInput.onchange = async (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    pendingImageMime = file.type || 'image/jpeg';
+    pendingImageB64 = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=ev=>res(ev.target.result.split(',')[1]); r.onerror=rej; r.readAsDataURL(file); });
+    btn.style.background = 'var(--accent)';
+    btn.title = `Image attached: ${file.name}`;
+    toast(`📎 Image attached: ${file.name}`, 'ok');
+  };
+  btn.onclick = () => fileInput.click();
+  inpRow.insertBefore(fileInput, inpRow.firstChild);
+  inpRow.insertBefore(btn, inpRow.lastChild);
+}
+
+// Extend callAI to inject image for vision models when one is pending
+const _origCallAI = callAI;
+async function callAI(system, messages, opts = {}) {
+  const provider = activeProvider();
+  const model    = getActiveModelName();
+  const isVision = model.includes('vision') || model.includes('llava') || model.includes('vl') ||
+                   model.includes('pixtral') || model.includes('moondream') || model.includes('phi-3.5') ||
+                   model.includes('blip') || model.includes('minicpm') || model.includes('bakllava') ||
+                   model.includes('ui-tars') || model.includes('gemma-3');
+
+  // If image is pending and model supports vision, inject it into last user message
+  if (pendingImageB64 && isVision) {
+    const lastUser = [...messages].reverse().find(m=>m.role==='user');
+    if (lastUser) {
+      const imgMsg = {
+        role: 'user',
+        content: [
+          { type:'text', text: lastUser.content },
+          { type:'image_url', image_url:{ url:`data:${pendingImageMime};base64,${pendingImageB64}` } },
+        ],
+      };
+      messages = messages.map(m => m===lastUser ? imgMsg : m);
+    }
+    pendingImageB64  = null;
+    pendingImageMime = 'image/jpeg';
+    // Reset button
+    const btn = document.getElementById('img-attach-btn');
+    if (btn) { btn.style.background = ''; btn.title = 'Attach image (for vision models)'; }
+  }
+
+  return _origCallAI(system, messages, opts);
+}
+
+// Setup image attach on boot
+setTimeout(setupImageAttach, 800);

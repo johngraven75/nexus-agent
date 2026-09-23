@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nexus Agent v3</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg0:#07070d;--bg1:#0e0e18;--bg2:#14141f;--bg3:#1c1c2a;--bg4:#252535;
+  --border:#2a2a3e;--border2:#363650;
+  --accent:#6c63ff;--accent2:#a78bfa;--accent3:#38bdf8;
+  --green:#4ade80;--red:#f87171;--yellow:#fbbf24;--orange:#fb923c;
+  --hf:#ff9d00;--text0:#f0f0ff;--text1:#c8c8e8;--text2:#8888aa;--text3:#555575;
+  --mono:'Cascadia Code','Fira Code','Consolas',monospace;
+  --ui:'Inter',-apple-system,'Segoe UI',sans-serif;--r:8px;--rs:5px;
+}
+body{font-family:var(--ui);background:var(--bg0);color:var(--text0);overflow:hidden;height:100vh;display:flex;flex-direction:column;user-select:none}
+::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:var(--bg1)}::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:3px}
+input,textarea,select{font-family:var(--ui)}
+
+/* Titlebar */
+#tb{height:36px;display:flex;align-items:center;justify-content:space-between;background:var(--bg0);border-bottom:1px solid var(--border);-webkit-app-region:drag;flex-shrink:0;padding:0 10px 0 14px}
+.tb-logo{display:flex;align-items:center;gap:7px}.tb-logo svg{width:18px;height:18px}
+.tb-logo-text{font-size:13px;font-weight:700;letter-spacing:.05em}.tb-logo-text span{color:var(--accent2)}
+.tb-center{font-size:11px;color:var(--text3)}.tb-btns{display:flex;gap:3px;-webkit-app-region:no-drag}
+.tb-btn{width:28px;height:22px;border:none;background:transparent;cursor:pointer;color:var(--text2);display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:11px;transition:background .12s,color .12s}
+.tb-btn:hover{background:var(--bg3);color:var(--text0)}.tb-btn.cls:hover{background:#c42b1c;color:#fff}
+
+/* Layout */
+#app{display:flex;flex:1;overflow:hidden}
+#sb{width:210px;background:var(--bg1);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;overflow-y:auto}
+.sb-sec{padding:10px 6px 4px}.sb-lbl{font-size:10px;font-weight:600;letter-spacing:.08em;color:var(--text3);text-transform:uppercase;padding:0 8px 5px}
+.nav{display:flex;align-items:center;gap:8px;width:100%;padding:6px 9px;background:transparent;border:none;color:var(--text1);cursor:pointer;border-radius:var(--rs);font-size:12px;text-align:left;transition:background .12s,color .12s}
+.nav:hover{background:var(--bg3);color:var(--text0)}.nav.active{background:var(--bg4);color:var(--accent2)}.nav svg{width:15px;height:15px;flex-shrink:0;opacity:.75}
+.sb-footer{margin-top:auto;padding:8px;border-top:1px solid var(--border);font-size:11px;color:var(--text3);line-height:1.6}.sb-footer b{color:var(--accent)}
+
+/* Content */
+#content{flex:1;overflow:hidden;display:flex;flex-direction:column}
+.view{display:none;flex:1;overflow:hidden;flex-direction:column}.view.active{display:flex}
+
+/* ── Buttons ── */
+.btn{padding:6px 14px;border-radius:var(--rs);border:none;cursor:pointer;font-size:12px;font-weight:600;transition:all .12s;display:inline-flex;align-items:center;gap:5px}
+.btn-pri{background:var(--accent);color:#fff}.btn-pri:hover{background:var(--accent2)}
+.btn-sec{background:var(--bg3);color:var(--text0);border:1px solid var(--border2)}.btn-sec:hover{background:var(--bg4)}
+.btn-hf{background:var(--hf);color:#000}.btn-hf:hover{opacity:.85}
+.btn-red{background:#450a0a;color:var(--red);border:1px solid #7f1d1d}.btn-red:hover{background:#7f1d1d}
+.btn-grn{background:#052e16;color:var(--green);border:1px solid #14532d}.btn-grn:hover{background:#14532d}
+.btn-sm{padding:3px 9px;font-size:11px}.btn:disabled{opacity:.4;cursor:not-allowed}
+
+/* ── Common inputs ── */
+.sinp{flex:1;background:var(--bg2);border:1px solid var(--border2);color:var(--text0);border-radius:var(--rs);padding:7px 10px;font-size:13px;outline:none;transition:border .15s}.sinp:focus{border-color:var(--accent)}.sinp::placeholder{color:var(--text3)}
+.ssel{background:var(--bg2);border:1px solid var(--border2);color:var(--text0);border-radius:var(--rs);padding:7px 10px;font-size:13px;outline:none;cursor:pointer;width:100%}
+
+/* ── Agent view ── */
+#view-agent{flex-direction:row!important}
+#chat-panel{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+#chat-hdr{padding:9px 13px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:7px;background:var(--bg1);flex-shrink:0}
+#chat-hdr h2{font-size:13px;font-weight:600;margin-right:auto}
+.ihdr-btn{background:var(--bg3);border:1px solid var(--border);color:var(--text1);width:27px;height:25px;border-radius:var(--rs);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .12s}.ihdr-btn:hover{background:var(--bg4);color:var(--text0)}.ihdr-btn svg{width:13px;height:13px}
+#msgs{flex:1;overflow-y:auto;padding:13px;display:flex;flex-direction:column;gap:9px}
+.msg{display:flex;gap:9px}.av{width:25px;height:25px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;margin-top:2px}
+.av-user{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}.av-ai{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff}.av-tool{background:#0f2a15;color:var(--green)}.av-sys{background:var(--bg4);color:var(--text2)}
+.msg.user{flex-direction:row-reverse}.msg-body{max-width:80%}
+.bubble{padding:8px 12px;border-radius:11px;font-size:13px;line-height:1.55;word-break:break-word;white-space:pre-wrap}
+.msg.user .bubble{background:var(--accent);color:#fff;border-bottom-right-radius:3px}
+.msg.ai .bubble{background:var(--bg3);color:var(--text0);border:1px solid var(--border);border-bottom-left-radius:3px}
+.msg.tool .bubble{background:#080f09;color:var(--green);border:1px solid #1a3a20;font-family:var(--mono);font-size:11px}
+.msg.sys .bubble{background:var(--bg2);color:var(--text2);border:1px solid var(--border);font-size:11px}
+.msg.err .bubble{background:#150808;color:var(--red);border:1px solid #3a1515}
+.msg-ts{font-size:10px;color:var(--text3);margin-top:2px;padding:0 3px}.msg.user .msg-ts{text-align:right}
+#typing{display:none;padding:0 13px 7px;align-items:center;gap:7px}#typing.on{display:flex}
+.tdots{display:flex;gap:3px}.tdots span{width:5px;height:5px;background:var(--accent2);border-radius:50%;animation:tdot 1.2s infinite}
+.tdots span:nth-child(2){animation-delay:.2s}.tdots span:nth-child(3){animation-delay:.4s}
+@keyframes tdot{0%,60%,100%{transform:translateY(0)}30%{transform:translateY(-5px)}}
+.tlbl{font-size:11px;color:var(--text2)}
+#inp-area{padding:9px 13px;border-top:1px solid var(--border);background:var(--bg1);flex-shrink:0}
+#mode-bar{display:flex;gap:5px;margin-bottom:7px;flex-wrap:wrap}
+.chip{padding:3px 8px;border-radius:99px;font-size:11px;cursor:pointer;border:1px solid var(--border);background:var(--bg3);color:var(--text2);transition:all .12s;font-weight:500;white-space:nowrap}
+.chip:hover{border-color:var(--accent);color:var(--accent2)}.chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
+#inp-row{display:flex;gap:7px;align-items:flex-end}
+#msg-in{flex:1;background:var(--bg2);border:1px solid var(--border2);color:var(--text0);border-radius:var(--r);padding:8px 12px;font-size:13px;resize:none;min-height:40px;max-height:140px;line-height:1.5;outline:none;transition:border .15s}#msg-in:focus{border-color:var(--accent)}#msg-in::placeholder{color:var(--text3)}
+#send{width:38px;height:38px;background:var(--accent);border:none;border-radius:var(--r);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .12s;flex-shrink:0}#send:hover{background:var(--accent2)}#send:disabled{opacity:.4;cursor:not-allowed}#send svg{width:16px;height:16px}
+#rpanel{width:340px;border-left:1px solid var(--border);background:var(--bg1);display:flex;flex-direction:column;flex-shrink:0}
+.ptabs{display:flex;border-bottom:1px solid var(--border);overflow-x:auto}.ptab{flex:1;min-width:fit-content;padding:7px 6px;text-align:center;font-size:11px;cursor:pointer;color:var(--text2);border-bottom:2px solid transparent;transition:all .12s;white-space:nowrap}.ptab:hover{color:var(--text0)}.ptab.on{color:var(--accent2);border-bottom-color:var(--accent2)}
+#pcontent{flex:1;overflow:hidden}.ppane{display:none;height:100%;overflow-y:auto;padding:10px}.ppane.on{display:block}
+.ps{padding:7px 10px;border-radius:var(--rs);background:var(--bg2);border:1px solid var(--border);display:flex;align-items:flex-start;gap:7px;margin-bottom:5px}
+.psi{width:16px;height:16px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;flex-shrink:0}
+.psi.pending{background:var(--bg4);color:var(--text2)}.psi.active{background:var(--accent);color:#fff}.psi.done{background:var(--green);color:#000}.psi.error{background:var(--red);color:#fff}
+.ps-text{font-size:12px;color:var(--text1);line-height:1.4}.ps-det{font-size:10px;color:var(--text2);margin-top:2px}
+#ftree{font-size:12px;font-family:var(--mono)}.fi{padding:3px 3px 3px 0;cursor:pointer;display:flex;align-items:center;gap:3px;border-radius:3px;color:var(--text1)}.fi:hover{background:var(--bg3)}.fi.dir{color:var(--accent3)}.fi-ch{padding-left:14px}
+.te{padding:7px 9px;border-radius:var(--rs);background:var(--bg2);border:1px solid var(--border);margin-bottom:5px}.te-name{font-size:11px;font-weight:600;color:var(--accent2);display:flex;align-items:center;gap:5px}.te-dot{width:6px;height:6px;border-radius:50%;background:var(--green)}.te-desc{font-size:10px;color:var(--text2);margin-top:2px}
+
+/* ── Files view ── */
+#file-tb{padding:8px 13px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:7px;background:var(--bg1);flex-shrink:0}#file-tb h2{font-size:13px;font-weight:600;margin-right:auto}
+#file-body{flex:1;display:flex;overflow:hidden}#file-exp{width:230px;border-right:1px solid var(--border);overflow-y:auto;padding:7px;font-size:12px;font-family:var(--mono)}
+#file-ed{flex:1;display:flex;flex-direction:column;overflow:hidden}
+#ed-hdr{padding:7px 11px;border-bottom:1px solid var(--border);background:var(--bg1);display:flex;align-items:center;gap:7px;font-size:12px;flex-shrink:0}#ed-fn{color:var(--accent2);font-family:var(--mono);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#ed-ta{flex:1;background:var(--bg0);border:none;color:var(--text0);font-family:var(--mono);font-size:13px;line-height:1.6;padding:14px;resize:none;outline:none;tab-size:2}
+
+/* ── Terminal ── */
+#term-hdr{padding:8px 13px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:7px;background:var(--bg1);flex-shrink:0}#term-hdr h2{font-size:13px;font-weight:600;margin-right:auto}
+#term-out{flex:1;overflow-y:auto;padding:13px;font-family:var(--mono);font-size:12px;line-height:1.5;color:var(--text0);background:var(--bg0)}
+.tl{padding:1px 0;white-space:pre-wrap;word-break:break-all}.tl.out{color:#d8d8ff}.tl.err{color:var(--red)}.tl.cmd{color:var(--accent2)}.tl.inf{color:var(--text2)}
+#term-inp{display:flex;align-items:center;padding:7px 11px;border-top:1px solid var(--border);background:var(--bg1);gap:7px;flex-shrink:0}.tprompt{color:var(--green);font-family:var(--mono);font-size:12px;flex-shrink:0}
+#tcmd{flex:1;background:transparent;border:none;color:var(--text0);font-family:var(--mono);font-size:12px;outline:none}
+#trun{background:var(--bg3);border:1px solid var(--border2);color:var(--green);padding:4px 9px;border-radius:var(--rs);cursor:pointer;font-size:12px;font-family:var(--mono);transition:all .12s}#trun:hover{background:var(--bg4)}
+
+/* ── Media view ── */
+.media-tb{padding:8px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;background:var(--bg1);flex-shrink:0}
+.media-tb h2{font-size:13px;font-weight:600;margin-right:auto}
+.media-body{flex:1;display:flex;overflow:hidden}
+.media-left{width:320px;border-right:1px solid var(--border);overflow-y:auto;padding:14px;flex-shrink:0}
+.media-right{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:14px;align-items:center}
+.mfield{margin-bottom:12px}.mfield label{font-size:12px;color:var(--text1);display:block;margin-bottom:4px}
+.mfield textarea{width:100%;background:var(--bg2);border:1px solid var(--border2);color:var(--text0);border-radius:var(--rs);padding:8px;font-size:13px;resize:vertical;outline:none;min-height:80px}
+.mfield textarea:focus{border-color:var(--accent)}.mfield select{width:100%}
+.media-tabs{display:flex;gap:4px;margin-bottom:14px}
+.media-tab{padding:6px 14px;border-radius:var(--rs);font-size:12px;cursor:pointer;background:var(--bg3);border:1px solid var(--border);color:var(--text2);transition:all .12s}
+.media-tab.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.media-pane{display:none}.media-pane.on{display:block}
+.gen-result{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:14px;width:100%;max-width:600px;text-align:center}
+.gen-result img{max-width:100%;border-radius:var(--rs);margin-bottom:10px}
+.gen-result video{max-width:100%;border-radius:var(--rs);margin-bottom:10px}
+.gen-history{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;margin-top:14px}
+.gen-hist-item{aspect-ratio:1;border-radius:var(--rs);overflow:hidden;cursor:pointer;border:2px solid transparent;transition:border .12s}.gen-hist-item:hover{border-color:var(--accent2)}
+.gen-hist-item img,.gen-hist-item video{width:100%;height:100%;object-fit:cover}
+.prov-sel{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px}
+.prov-opt{padding:7px 9px;border-radius:var(--rs);border:1px solid var(--border);background:var(--bg2);cursor:pointer;font-size:11px;color:var(--text1);transition:all .12s;text-align:center}
+.prov-opt:hover{border-color:var(--accent2)}.prov-opt.on{border-color:var(--accent);background:var(--bg3);color:var(--accent2)}
+.gen-progress{padding:12px;background:var(--bg3);border-radius:var(--rs);font-size:12px;color:var(--text2);text-align:center;display:none}.gen-progress.on{display:block}
+.gen-prog-bar{background:var(--bg4);border-radius:99px;height:4px;margin-top:8px;overflow:hidden}
+.gen-prog-fill{background:var(--accent2);height:100%;width:0%;transition:width .3s;border-radius:99px}
+
+/* ── Doctor view ── */
+.doc-tb{padding:8px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;background:var(--bg1);flex-shrink:0}
+.doc-tb h2{font-size:13px;font-weight:600;margin-right:auto}
+.doc-body{flex:1;overflow-y:auto;padding:16px;max-width:800px}
+#doctor-results{margin-top:14px}
+.dr-row{display:flex;align-items:flex-start;gap:10px;padding:8px 10px;border-radius:var(--rs);background:var(--bg2);border:1px solid var(--border);margin-bottom:5px}
+.dr-icon{font-size:14px;flex-shrink:0;width:16px;text-align:center}.dr-label{font-size:12px;font-weight:600;color:var(--text0);flex-shrink:0;min-width:180px}.dr-msg{font-size:11px;color:var(--text2);flex:1}
+.dr-summary{display:flex;align-items:center;gap:14px;padding:10px 12px;background:var(--bg3);border-radius:var(--rs);margin-top:10px;font-size:12px}
+.doc-ai-result{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:14px;margin-top:14px;font-size:13px;color:var(--text1);white-space:pre-wrap;line-height:1.6}
+
+/* ── Connectors view ── */
+.cat-tb{padding:8px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;background:var(--bg1);flex-shrink:0}
+.cat-tb h2{font-size:13px;font-weight:600;margin-right:auto}
+.cat-body{flex:1;overflow-y:auto;padding:14px}
+.cat-search-row{display:flex;gap:8px;margin-bottom:12px}
+#cat-search{flex:1;background:var(--bg2);border:1px solid var(--border2);color:var(--text0);border-radius:var(--rs);padding:8px 12px;font-size:13px;outline:none}#cat-search:focus{border-color:var(--accent)}
+.conn-section{margin-bottom:20px}.conn-cat-label{font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
+.conn-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px}
+.conn-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;transition:border .12s}
+.conn-card:hover{border-color:var(--border2)}.conn-card.connected{border-color:var(--green)}
+.conn-card-top{display:flex;align-items:flex-start;gap:8px;margin-bottom:5px}.conn-icon{font-size:20px;flex-shrink:0}.conn-name{font-size:12px;font-weight:700;color:var(--text0);flex:1}
+.conn-status-badge{font-size:9px;background:#052e16;color:var(--green);border:1px solid #14532d;border-radius:99px;padding:1px 6px;white-space:nowrap}
+.conn-desc{font-size:11px;color:var(--text2);margin-bottom:8px;line-height:1.4}
+.conn-card-btns{display:flex;gap:5px}
+
+/* ── Skills view ── */
+.skills-tb{padding:8px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;background:var(--bg1);flex-shrink:0}
+.skills-tb h2{font-size:13px;font-weight:600;margin-right:auto}
+.skills-body{flex:1;overflow-y:auto;padding:14px}
+.skills-search-row{display:flex;gap:8px;margin-bottom:10px}
+#skills-search{flex:1;background:var(--bg2);border:1px solid var(--border2);color:var(--text0);border-radius:var(--rs);padding:8px 12px;font-size:13px;outline:none}#skills-search:focus{border-color:var(--accent2)}
+.skills-cats{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:12px}
+.scat-btn{padding:3px 10px;border-radius:99px;font-size:11px;cursor:pointer;border:1px solid var(--border);background:var(--bg3);color:var(--text2);transition:all .12s}
+.scat-btn:hover{border-color:var(--accent2)}.scat-btn.on{background:var(--accent2);border-color:var(--accent2);color:#000;font-weight:700}
+.skill-section{margin-bottom:20px}.skill-cat{font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
+.skill-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px}
+.skill-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;transition:border .12s}
+.skill-card.enabled{border-color:var(--accent)}
+.skill-card-hdr{display:flex;align-items:flex-start;gap:8px;margin-bottom:5px}
+.skill-icon{font-size:18px;flex-shrink:0}.skill-name{font-size:12px;font-weight:700;color:var(--text0)}
+.skill-origin{font-size:10px;color:var(--text3);margin-top:1px}.skill-toggle-wrap{margin-left:auto;flex-shrink:0}
+.skill-toggle{position:relative;display:inline-block;width:34px;height:18px}
+.skill-toggle input{opacity:0;width:0;height:0}
+.skill-slider{position:absolute;cursor:pointer;inset:0;background:var(--bg4);border-radius:99px;transition:.2s}
+.skill-slider:before{content:'';position:absolute;width:14px;height:14px;left:2px;bottom:2px;background:var(--text3);border-radius:50%;transition:.2s}
+.skill-toggle input:checked + .skill-slider{background:var(--accent)}
+.skill-toggle input:checked + .skill-slider:before{transform:translateX(16px);background:#fff}
+.skill-desc{font-size:11px;color:var(--text2);margin-bottom:8px;line-height:1.4}
+.skill-card-btns{display:flex;gap:5px}
+
+/* ── Settings ── */
+#view-settings{overflow-y:auto}
+#set-body{padding:18px 22px;max-width:760px}
+.set-hdr{font-size:17px;font-weight:700;margin-bottom:5px}.set-sub{font-size:13px;color:var(--text2);margin-bottom:20px}
+.stabs{display:flex;gap:3px;margin-bottom:18px;border-bottom:1px solid var(--border);padding-bottom:0;flex-wrap:wrap}
+.stab{padding:7px 13px;font-size:12px;cursor:pointer;color:var(--text2);border-bottom:2px solid transparent;transition:all .12s;margin-bottom:-1px;white-space:nowrap}
+.stab:hover{color:var(--text0)}.stab.on{color:var(--accent2);border-bottom-color:var(--accent2)}
+.spane{display:none}.spane.on{display:block}
+.ssec{margin-bottom:22px}.ssec h3{font-size:12px;font-weight:700;color:var(--text0);margin-bottom:11px;padding-bottom:6px;border-bottom:1px solid var(--border);letter-spacing:.03em;display:flex;align-items:center;gap:6px}
+.srow{display:flex;align-items:flex-start;gap:10px;margin-bottom:10px}
+.slbl{font-size:13px;color:var(--text1);width:175px;flex-shrink:0;padding-top:7px}.slbl-sm{font-size:11px;color:var(--text2);margin-top:2px}
+.key-row{display:flex;gap:6px;flex:1}.key-row .sinp{flex:1}
+.pbadge{display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:99px;font-size:11px;font-weight:600;margin-right:3px}
+.pb-ant{background:#2d1f5e;color:var(--accent2);border:1px solid #4f3aaa}.pb-oai{background:#0f1f12;color:#4ade80;border:1px solid #1a3a20}
+.pb-gem{background:#1f1510;color:#fbbf24;border:1px solid #3a2a10}.pb-hf{background:#1f1400;color:#ff9d00;border:1px solid #4a3000}
+.pb-grq{background:#0f1a1f;color:#38bdf8;border:1px solid #1a3a4a}.pb-mis{background:#0f1520;color:#60a5fa;border:1px solid #1a3050}
+.pb-tog{background:#0a1f15;color:#34d399;border:1px solid #1a4a30}.pb-ort{background:#1f0f18;color:#f472b6;border:1px solid #4a1a35}
+.pb-img{background:#150820;color:#c084fc;border:1px solid #3a1060}.pb-vid{background:#1f0808;color:#fb7185;border:1px solid #4a1515}
+.pb-ola{background:#1f1008;color:#fb923c;border:1px solid #4a2a10}.pb-lms{background:#1a0f1f;color:#e879f9;border:1px solid #3a1a4a}
+.pb-stab{background:#200818;color:#c084fc;border:1px solid #4a1050}
+
+/* Download progress */
+.dl-progress{display:none;background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;margin-top:10px}.dl-progress.on{display:block}
+.dl-bar-wrap{background:var(--bg4);border-radius:99px;height:5px;margin:5px 0}.dl-bar{background:var(--hf);height:100%;border-radius:99px;transition:width .2s}
+
+/* HF search */
+#hf-results{display:flex;flex-direction:column;gap:6px}.hf-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:9px 11px;cursor:pointer;transition:border .12s}.hf-card:hover{border-color:var(--hf)}
+.hf-card-title{font-size:12px;font-weight:600;color:var(--text0);margin-bottom:3px;display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.hf-tag{font-size:9px;padding:1px 5px;border-radius:99px;background:var(--bg4);color:var(--text2);border:1px solid var(--border)}.hf-card-meta{font-size:10px;color:var(--text2)}.hf-card-actions{display:flex;gap:5px;margin-top:7px}
+.hf-filter-row{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:9px}
+.hf-ft{padding:3px 8px;border-radius:99px;font-size:11px;cursor:pointer;border:1px solid var(--border);background:var(--bg3);color:var(--text2);transition:all .12s}.hf-ft.on{background:var(--hf);border-color:var(--hf);color:#000;font-weight:700}
+.hf-search-row{display:flex;gap:7px;margin-bottom:9px}
+#hf-q{flex:1;background:var(--bg2);border:1px solid var(--border2);color:var(--text0);border-radius:var(--rs);padding:7px 10px;font-size:13px;outline:none}#hf-q:focus{border-color:var(--hf)}
+#hf-search-btn{background:var(--hf);border:none;color:#000;padding:7px 13px;border-radius:var(--rs);cursor:pointer;font-size:13px;font-weight:700;transition:opacity .12s}#hf-search-btn:hover{opacity:.85}
+.lm-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:8px 10px;display:flex;align-items:center;gap:8px;margin-bottom:5px}.lm-info{flex:1;min-width:0}
+.lm-name{font-size:11px;font-weight:600;color:var(--text0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono)}.lm-meta{font-size:10px;color:var(--text2)}.lm-actions{display:flex;gap:5px;flex-shrink:0}
+.ol-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:7px 10px;display:flex;align-items:center;justify-content:space-between;margin-bottom:5px}.ol-name{font-size:12px;font-family:var(--mono);color:var(--text0)}.ol-size{font-size:10px;color:var(--text2)}
+
+/* ── Modal ── */
+#conn-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;align-items:center;justify-content:center}#conn-modal.open{display:flex}
+#conn-modal-inner{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r);max-width:480px;width:92%;padding:20px;max-height:80vh;overflow-y:auto}
+
+/* ── Status / Toast ── */
+#sb-bar{height:21px;background:var(--bg0);border-top:1px solid var(--border);display:flex;align-items:center;padding:0 10px;gap:13px;flex-shrink:0}
+.si{font-size:10px;color:var(--text3);display:flex;align-items:center;gap:3px}.sd{width:5px;height:5px;border-radius:50%}
+.sd.g{background:var(--green)}.sd.r{background:var(--red)}.sd.y{background:var(--yellow)}.sd.x{background:var(--text3)}
+#toast-c{position:fixed;bottom:28px;right:16px;display:flex;flex-direction:column;gap:7px;z-index:9999}
+.toast{padding:8px 13px;border-radius:var(--r);font-size:12px;max-width:300px;animation:tin .18s ease;border:1px solid transparent}
+.toast.ok{background:#0a1f10;color:var(--green);border-color:#1a4a25}.toast.er{background:#1a0808;color:var(--red);border-color:#4a1515}.toast.in{background:var(--bg3);color:var(--text0);border-color:var(--border2)}
+@keyframes tin{from{opacity:0;transform:translateX(14px)}to{opacity:1;transform:translateX(0)}}
+
+/* ── Model detail card (provider selects) ── */
+.model-detail-card{animation:fadeIn .15s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
+
+/* ── HF detail panel ── */
+#hf-detail-panel{animation:fadeIn .15s ease}
+#hf-detail-content a{color:var(--accent3)}
+#hf-detail-content a:hover{color:var(--accent2)}
+.hf-card.selected-card{border-color:var(--hf)!important}
+
+/* ── Stat box grid ── */
+.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
+
+/* ── Installer wizard ── */
+.inst-tool-row{transition:background .1s}
+.inst-tool-row:hover{background:var(--bg3)!important}
+#inst-log{font-size:10.5px;line-height:1.6}
+</style>
+</head>
+<body>
+
+<div id="tb">
+  <div class="tb-logo">
+    <svg viewBox="0 0 24 24" fill="none"><path d="M12 2L2 7l10 5 10-5z" stroke="#6c63ff" stroke-width="2" stroke-linejoin="round"/><path d="M2 17l10 5 10-5" stroke="#a78bfa" stroke-width="2" stroke-linejoin="round"/><path d="M2 12l10 5 10-5" stroke="#38bdf8" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <span class="tb-logo-text">Nexus <span>Agent</span> <span style="font-weight:300;color:var(--text3)">v3</span></span>
+  </div>
+  <div class="tb-center" id="tb-model">—</div>
+  <div class="tb-btns">
+    <button class="tb-btn" onclick="nexus.minimize()">─</button>
+    <button class="tb-btn" onclick="nexus.maximize()">□</button>
+    <button class="tb-btn cls" onclick="nexus.close()">✕</button>
+  </div>
+</div>
+
+<div id="app">
+<div id="sb">
+  <div class="sb-sec">
+    <div class="sb-lbl">Workspace</div>
+    <button class="nav active" data-v="agent"    onclick="sv('agent')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>Agent</button>
+    <button class="nav"        data-v="files"    onclick="sv('files')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h6l2 3h10v15H3z"/></svg>Files</button>
+    <button class="nav"        data-v="terminal" onclick="sv('terminal')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M8 12l3 3-3 3"/><path d="M15 18h2"/></svg>Terminal</button>
+    <button class="nav"        data-v="media"    onclick="sv('media')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/></svg>Media Gen</button>
+    <button class="nav"        data-v="doctor"   onclick="sv('doctor')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>App Doctor</button>
+  </div>
+  <div class="sb-sec">
+    <div class="sb-lbl">Catalog</div>
+    <button class="nav" data-v="connectors" onclick="sv('connectors')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>Connectors</button>
+    <button class="nav" data-v="skills"     onclick="sv('skills')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>Skills</button>
+  </div>
+  <div class="sb-sec">
+    <div class="sb-lbl">Config</div>
+    <button class="nav" onclick="Installer.openWizard()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>Dep Wizard</button>
+    <button class="nav" data-v="settings" onclick="sv('settings')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>Settings</button>
+  </div>
+  <div class="sb-footer">Provider: <b id="sb-prov">—</b><br>Model: <b id="sb-model">—</b></div>
+</div>
+
+<div id="content">
+
+<!-- ── AGENT ── -->
+<div class="view active" id="view-agent">
+  <div id="chat-panel">
+    <div id="chat-hdr">
+      <h2>🤖 Nexus Agent</h2>
+      <span id="hdr-badge" style="font-size:11px;color:var(--text2)"></span>
+      <button class="ihdr-btn" title="Clear" onclick="clearChat()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg></button>
+      <button class="ihdr-btn" title="Export" onclick="exportChat()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
+      <button class="ihdr-btn" title="Open workspace" onclick="nexus.openWorkspace()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h6l2 3h10v13H3z"/></svg></button>
+    </div>
+    <div id="msgs"></div>
+    <div id="typing"><div class="tdots"><span></span><span></span><span></span></div><span class="tlbl" id="tlbl">Thinking…</span></div>
+    <div id="inp-area">
+      <div id="mode-bar">
+        <div class="chip on" data-m="agent" onclick="setMode('agent')">🤖 Auto</div>
+        <div class="chip" data-m="chat"  onclick="setMode('chat')">💬 Chat</div>
+        <div class="chip" data-m="code"  onclick="setMode('code')">⌨️ Code</div>
+        <div class="chip" data-m="plan"  onclick="setMode('plan')">📋 Plan</div>
+        <div class="chip" data-m="debug" onclick="setMode('debug')">🐞 Debug</div>
+        <div class="chip" data-m="arch"  onclick="setMode('arch')">🏗️ Arch</div>
+        <div class="chip" data-m="doc"   onclick="setMode('doc')">📖 Docs</div>
+        <div class="chip" data-m="security" onclick="setMode('security')">🔒 Sec</div>
+      </div>
+      <div id="inp-row">
+        <textarea id="msg-in" placeholder="Describe your task… (Enter to send, Shift+Enter for newline)" rows="1"></textarea>
+        <button id="send" onclick="sendMsg()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
+      </div>
+    </div>
+  </div>
+  <div id="rpanel">
+    <div class="ptabs">
+      <div class="ptab on" data-pt="plan"    onclick="pt('plan')">Plan</div>
+      <div class="ptab"    data-pt="tree"    onclick="pt('tree')">Files</div>
+      <div class="ptab"    data-pt="tools"   onclick="pt('tools')">Tools</div>
+      <div class="ptab"    data-pt="context" onclick="pt('context')">Context</div>
+    </div>
+    <div id="pcontent">
+      <div class="ppane on" id="pp-plan"><div id="plan-inner"><div style="color:var(--text2);font-size:12px;text-align:center;padding:18px 0">No plan yet.</div></div></div>
+      <div class="ppane" id="pp-tree"><div style="display:flex;justify-content:space-between;margin-bottom:7px"><span style="font-size:11px;color:var(--text2)">Workspace</span><button class="btn btn-sec btn-sm" onclick="rfTree()">↻</button></div><div id="ftree"></div></div>
+      <div class="ppane" id="pp-tools"><div id="tools-list"></div></div>
+      <div class="ppane" id="pp-context">
+        <div style="font-size:11px;color:var(--text2);margin-bottom:7px">Extra context for agent system prompt:</div>
+        <textarea id="ctx-ta" style="width:100%;height:160px;background:var(--bg2);border:1px solid var(--border);color:var(--text0);border-radius:var(--rs);padding:8px;font-size:12px;resize:vertical;outline:none;font-family:var(--mono)" placeholder="Project stack, constraints, preferences…"></textarea>
+        <div style="display:flex;gap:6px;margin-top:7px">
+          <button class="btn btn-pri btn-sm" onclick="saveCtx()">Save</button>
+          <button class="btn btn-sec btn-sm" onclick="clearCtx()">Clear</button>
+        </div>
+        <div style="margin-top:12px;font-size:11px;color:var(--text2)">Active Skills:</div>
+        <div id="active-skills-mini" style="margin-top:5px;display:flex;flex-wrap:wrap;gap:4px"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── FILES ── -->
+<div class="view" id="view-files">
+  <div id="file-tb"><h2>📁 Files</h2><button class="btn btn-sec btn-sm" onclick="rfFiles()">↻</button><button class="btn btn-pri btn-sm" onclick="saveEd()">💾 Save</button><button class="btn btn-sec btn-sm" onclick="newFile()">+ New</button><button class="btn btn-sec btn-sm" onclick="nexus.openWorkspace()">📂 Open</button></div>
+  <div id="file-body"><div id="file-exp"></div><div id="file-ed"><div id="ed-hdr"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--text2)" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span id="ed-fn">Select a file</span><span id="ed-lang" style="margin-left:auto;font-size:10px;color:var(--text3);font-family:var(--mono)"></span></div><textarea id="ed-ta" spellcheck="false" placeholder="Select a file…"></textarea></div></div>
+</div>
+
+<!-- ── TERMINAL ── -->
+<div class="view" id="view-terminal">
+  <div id="term-hdr"><h2>⚡ Terminal</h2><button class="btn btn-sec btn-sm" onclick="clearTerm()">Clear</button><button class="btn btn-sec btn-sm" onclick="killAll()">⏹ Kill</button><button class="btn btn-sec btn-sm" onclick="nexus.openWorkspace()">📂</button></div>
+  <div id="term-out"></div>
+  <div id="term-inp"><span class="tprompt">$ </span><input type="text" id="tcmd" placeholder="Enter command…"><button id="trun" onclick="runTerm()">Run ↵</button></div>
+</div>
+
+<!-- ── MEDIA GENERATION ── -->
+<div class="view" id="view-media">
+  <div class="media-tb"><h2>🎨 Media Generation</h2><span style="font-size:11px;color:var(--text2)">Images & Video via AI</span></div>
+  <div class="media-body">
+    <div class="media-left">
+      <div class="media-tabs">
+        <div class="media-tab on" data-mt="image" onclick="setMediaTab('image')">🖼️ Image</div>
+        <div class="media-tab" data-mt="video" onclick="setMediaTab('video')">🎬 Video</div>
+      </div>
+      <div class="media-pane on" id="mp-image">
+        <div class="mfield"><label>Provider</label><div class="prov-sel" id="img-prov-sel"></div></div>
+        <div class="mfield"><label>Prompt</label><textarea id="img-prompt" placeholder="Describe the image you want to generate…"></textarea></div>
+        <div class="mfield"><label>Negative prompt (optional)</label><textarea id="img-neg-prompt" style="min-height:50px" placeholder="What to avoid…"></textarea></div>
+        <div class="mfield"><label>Size</label><select id="img-size" class="ssel"></select></div>
+        <div class="mfield" id="img-style-wrap"><label>Style</label><select id="img-style" class="ssel"><option>vivid</option><option>natural</option></select></div>
+        <div class="mfield" id="img-quality-wrap"><label>Quality</label><select id="img-quality" class="ssel"><option>standard</option><option>hd</option></select></div>
+        <div class="mfield"><label>HF Image Model (for HF provider)</label><input class="sinp" id="img-hf-model" style="width:100%" placeholder="stabilityai/stable-diffusion-xl-base-1.0"></div>
+        <div class="mfield"><label>Steps (1-50)</label><input type="range" id="img-steps" min="1" max="50" value="30" style="width:100%"> <span id="img-steps-label">30</span></div>
+        <button class="btn btn-pri" onclick="generateImage()" style="width:100%">✨ Generate Image</button>
+      </div>
+      <div class="media-pane" id="mp-video">
+        <div class="mfield"><label>Provider</label><div class="prov-sel" id="vid-prov-sel"></div></div>
+        <div class="mfield"><label>Prompt</label><textarea id="vid-prompt" placeholder="Describe the video scene or motion…"></textarea></div>
+        <div class="mfield"><label>Duration (seconds)</label><select id="vid-duration" class="ssel"><option value="4">4s</option><option value="5" selected>5s</option><option value="6">6s</option><option value="8">8s</option><option value="10">10s</option></select></div>
+        <div class="mfield"><label>Image input (optional — Image→Video)</label><input type="file" id="vid-image-input" accept="image/*" style="font-size:11px;color:var(--text1);width:100%"></div>
+        <button class="btn btn-pri" onclick="generateVideo()" style="width:100%">🎬 Generate Video</button>
+        <div style="font-size:11px;color:var(--text2);margin-top:8px;line-height:1.5">Note: Video generation takes 30s–5min depending on provider. A poll loop will wait for completion.</div>
+      </div>
+    </div>
+    <div class="media-right">
+      <div class="gen-progress" id="gen-progress"><div id="gen-progress-msg">Generating…</div><div class="gen-prog-bar"><div class="gen-prog-fill" id="gen-prog-fill"></div></div></div>
+      <div class="gen-result" id="gen-result" style="display:none"></div>
+      <div style="width:100%;max-width:600px" id="gen-history-wrap" style="display:none">
+        <div style="font-size:11px;color:var(--text2);margin-bottom:7px">History (this session)</div>
+        <div class="gen-history" id="gen-history"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── APP DOCTOR ── -->
+<div class="view" id="view-doctor">
+  <div class="doc-tb">
+    <h2>🩺 App Doctor</h2>
+    <button class="btn btn-pri" onclick="runDoctor()">▶ Run Analysis</button>
+    <button class="btn btn-sec" onclick="Doctor.fixAll()">⚡ Fix All Issues</button>
+    <button class="btn btn-sec" onclick="runAiDoctor()">🤖 Deep AI Analysis</button>
+  </div>
+  <div class="doc-body">
+    <div style="font-size:13px;color:var(--text2);margin-bottom:14px">Analyzes your workspace for common issues, missing files, security risks, and best-practice violations — then auto-fixes what it can.</div>
+    <div id="doctor-results">
+      <div style="color:var(--text3);font-size:12px">Click "Run Analysis" to start.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── CONNECTORS ── -->
+<div class="view" id="view-connectors">
+  <div class="cat-tb"><h2>🔌 Connectors</h2><span style="font-size:11px;color:var(--text2)" id="conn-count"></span></div>
+  <div class="cat-body">
+    <div class="cat-search-row">
+      <input id="cat-search" placeholder="Search connectors (GitHub, Stripe, Notion…)" oninput="filterConnectors(this.value)">
+      <button class="btn btn-sec" onclick="filterConnectors('')">All</button>
+      <button class="btn btn-grn btn-sm" id="conn-connected-count" onclick="showConnected()">✓ Connected</button>
+    </div>
+    <div id="connectors-grid"></div>
+  </div>
+</div>
+
+<!-- ── SKILLS ── -->
+<div class="view" id="view-skills">
+  <div class="skills-tb"><h2>⚡ Skills & Plugins</h2><span style="font-size:11px;color:var(--text2)" id="skills-count"></span></div>
+  <div class="skills-body">
+    <div class="skills-search-row">
+      <input id="skills-search" placeholder="Search skills (code review, refactor, SQL…)" oninput="filterSkills(this.value)">
+      <button class="btn btn-sec" onclick="filterSkills('')">All</button>
+    </div>
+    <div class="skills-cats" id="skill-cats"></div>
+    <div id="skills-grid"></div>
+  </div>
+</div>
+
+<!-- ── SETTINGS ── -->
+<div class="view" id="view-settings">
+<div id="set-body">
+  <div class="set-hdr">⚙️ Settings</div>
+  <div class="set-sub">AI providers, models, media generation keys, and agent config.</div>
+  <div class="stabs">
+    <div class="stab on" data-st="providers" onclick="st('providers')">Providers</div>
+    <div class="stab" data-st="hf"        onclick="st('hf')">🤗 HuggingFace</div>
+    <div class="stab" data-st="local"     onclick="st('local')">📦 Local/Ollama</div>
+    <div class="stab" data-st="media-keys" onclick="st('media-keys')">🎨 Media Keys</div>
+    <div class="stab" data-st="agent"     onclick="st('agent')">🤖 Agent</div>
+    <div class="stab" data-st="custom"    onclick="st('custom')">Custom</div>
+  </div>
+
+  <div class="spane on" id="st-providers">
+    <div class="ssec"><h3><span class="pbadge pb-ant">Claude</span> Anthropic</h3>
+      <div class="srow"><div class="slbl">API Key<div class="slbl-sm">console.anthropic.com</div></div><div class="key-row"><input type="password" class="sinp" id="s-ant-key" placeholder="sk-ant-…"><button class="btn btn-sec btn-sm" onclick="testKey('anthropic')">Test</button></div></div>
+      <div class="srow"><div class="slbl">Model</div><select class="ssel" id="s-ant-model"><option value="claude-sonnet-4-6">claude-sonnet-4-6 ★</option><option value="claude-opus-5">claude-opus-5</option><option value="claude-sonnet-5">claude-sonnet-5</option><option value="claude-haiku-4-5">claude-haiku-4-5</option></select></div></div>
+    <div class="ssec"><h3><span class="pbadge pb-oai">OpenAI</span> OpenAI</h3>
+      <div class="srow"><div class="slbl">API Key</div><div class="key-row"><input type="password" class="sinp" id="s-oai-key" placeholder="sk-…"><button class="btn btn-sec btn-sm" onclick="testKey('openai')">Test</button></div></div>
+      <div class="srow"><div class="slbl">Model</div><select class="ssel" id="s-oai-model"><option value="gpt-4o">gpt-4o</option><option value="gpt-4o-mini">gpt-4o-mini</option><option value="o3">o3</option><option value="o4-mini">o4-mini</option><option value="o1">o1</option></select></div></div>
+    <div class="ssec"><h3><span class="pbadge pb-gem">Gemini</span> Google Gemini</h3>
+      <div class="srow"><div class="slbl">API Key</div><div class="key-row"><input type="password" class="sinp" id="s-gem-key" placeholder="AIza…"><button class="btn btn-sec btn-sm" onclick="testKey('gemini')">Test</button></div></div>
+      <div class="srow"><div class="slbl">Model</div><select class="ssel" id="s-gem-model"><option value="gemini-2.0-flash">gemini-2.0-flash</option><option value="gemini-2.0-pro">gemini-2.0-pro</option><option value="gemini-1.5-pro">gemini-1.5-pro</option></select></div></div>
+    <div class="ssec"><h3><span class="pbadge pb-grq">Groq</span> Groq</h3>
+      <div class="srow"><div class="slbl">API Key</div><div class="key-row"><input type="password" class="sinp" id="s-grq-key" placeholder="gsk_…"><button class="btn btn-sec btn-sm" onclick="testKey('groq')">Test</button></div></div>
+      <div class="srow"><div class="slbl">Model</div><select class="ssel" id="s-grq-model"><option value="llama-3.3-70b-versatile">Llama 3.3 70B ★</option><option value="llama-3.1-8b-instant">Llama 3.1 8B</option><option value="mixtral-8x7b-32768">Mixtral 8x7B</option><option value="deepseek-r1-distill-llama-70b">DeepSeek-R1 70B</option></select></div></div>
+    <div class="ssec"><h3><span class="pbadge pb-mis">Mistral</span> Mistral AI</h3>
+      <div class="srow"><div class="slbl">API Key</div><div class="key-row"><input type="password" class="sinp" id="s-mis-key" placeholder="…"><button class="btn btn-sec btn-sm" onclick="testKey('mistral')">Test</button></div></div>
+      <div class="srow"><div class="slbl">Model</div><select class="ssel" id="s-mis-model"><option value="mistral-large-latest">mistral-large-latest</option><option value="codestral-latest">codestral-latest ★</option><option value="mistral-small-latest">mistral-small-latest</option></select></div></div>
+    <div class="ssec"><h3><span class="pbadge pb-tog">Together</span> Together AI</h3>
+      <div class="srow"><div class="slbl">API Key</div><div class="key-row"><input type="password" class="sinp" id="s-tog-key" placeholder="…"><button class="btn btn-sec btn-sm" onclick="testKey('together')">Test</button></div></div>
+      <div class="srow"><div class="slbl">Model</div><select class="ssel" id="s-tog-model"><option value="meta-llama/Llama-3.3-70B-Instruct-Turbo">Llama 3.3 70B Turbo ★</option><option value="meta-llama/Llama-3.1-405B-Instruct-Turbo">Llama 3.1 405B</option><option value="deepseek-ai/DeepSeek-R1">DeepSeek-R1</option><option value="Qwen/QwQ-32B-Preview">Qwen QwQ 32B</option></select></div></div>
+    <div class="ssec"><h3><span class="pbadge pb-ort">OpenRouter</span> OpenRouter</h3>
+      <div class="srow"><div class="slbl">API Key</div><div class="key-row"><input type="password" class="sinp" id="s-ort-key" placeholder="sk-or-…"><button class="btn btn-sec btn-sm" onclick="testKey('openrouter')">Test</button></div></div>
+      <div class="srow"><div class="slbl">Model<div class="slbl-sm">Type or pick a free model</div></div>
+        <div style="flex:1;display:flex;flex-direction:column;gap:5px">
+          <input class="sinp" id="s-ort-model" id="s-ort-model-text" placeholder="meta-llama/llama-3.1-8b-instruct:free" value="meta-llama/llama-3.1-8b-instruct:free" style="width:100%">
+          <select class="ssel" id="s-ort-model-select" onchange="document.getElementById('s-ort-model').value=this.value;S.cfg.openrouterModel=this.value" style="font-size:11px">
+            <optgroup label="🆓 Text / General (free)">
+              <option value="meta-llama/llama-3.1-8b-instruct:free">Llama 3.1 8B — best all-round ★</option>
+              <option value="meta-llama/llama-3.2-3b-instruct:free">Llama 3.2 3B — fast</option>
+              <option value="meta-llama/llama-3.2-1b-instruct:free">Llama 3.2 1B — tiny/instant</option>
+              <option value="google/gemma-2-9b-it:free">Gemma 2 9B — strong reasoning</option>
+              <option value="mistralai/mistral-7b-instruct:free">Mistral 7B — code + chat</option>
+              <option value="qwen/qwen-2-7b-instruct:free">Qwen 2 7B — 128K, multilingual</option>
+              <option value="microsoft/phi-3-mini-128k-instruct:free">Phi-3 Mini 128K</option>
+              <option value="openchat/openchat-7b:free">OpenChat 7B</option>
+              <option value="huggingfaceh4/zephyr-7b-beta:free">Zephyr 7B Beta</option>
+              <option value="openrouter/auto">Auto — best available free</option>
+            </optgroup>
+            <optgroup label="👁️ Vision / Multimodal (free) — image + text">
+              <option value="meta-llama/llama-3.2-11b-vision-instruct:free">Llama 3.2 11B Vision ★ — best free vision</option>
+              <option value="meta-llama/llama-3.2-90b-vision-instruct:free">Llama 3.2 90B Vision — highest quality</option>
+              <option value="qwen/qwen-2-vl-7b-instruct:free">Qwen2-VL 7B — strong OCR + docs</option>
+              <option value="google/gemma-3-12b-it:free">Gemma 3 12B — Google multimodal</option>
+              <option value="mistralai/pixtral-12b:free">Pixtral 12B — charts + tables</option>
+              <option value="bytedance-research/ui-tars-72b:free">UI-TARS 72B — UI/screenshot analysis</option>
+              <option value="moonshotai/moonlight-16b-a3b-instruct:free">Moonlight 16B — MoE vision</option>
+            </optgroup>
+            <optgroup label="🔓 Uncensored / Unfiltered (free)">
+              <option value="nousresearch/hermes-3-llama-3.1-405b:free">Hermes 3 Llama 405B ★ — best uncensored free</option>
+              <option value="nousresearch/hermes-3-llama-3.1-70b:free">Hermes 3 Llama 70B — uncensored</option>
+              <option value="nousresearch/nous-hermes-2-mixtral-8x7b-dpo:free">Nous Hermes 2 Mixtral DPO</option>
+              <option value="gryphe/mythomax-l2-13b:free">MythoMax 13B — creative + roleplay</option>
+              <option value="gryphe/mythomist-7b:free">MythoMist 7B — uncensored 32K</option>
+              <option value="sao10k/l3-euryale-70b:free">L3 Euryale 70B — creative writing</option>
+              <option value="neversleep/noromaid-20b:free">Noromaid 20B — roleplay</option>
+              <option value="alpindale/goliath-120b:free">Goliath 120B — huge uncensored</option>
+              <option value="undi95/toppy-m-7b:free">Toppy M 7B — creative</option>
+            </optgroup>
+            <optgroup label="💻 Code (free)">
+              <option value="qwen/qwen-2.5-coder-7b-instruct:free">Qwen 2.5 Coder 7B ★</option>
+              <option value="qwen/qwen-2.5-coder-32b-instruct:free">Qwen 2.5 Coder 32B — best free code</option>
+              <option value="deepseek/deepseek-r1:free">DeepSeek-R1 — chain-of-thought</option>
+              <option value="deepseek/deepseek-r1-distill-llama-70b:free">DeepSeek-R1 Distill 70B</option>
+            </optgroup>
+            <optgroup label="💳 Paid Models (credits needed)">
+              <option value="anthropic/claude-3.5-sonnet">Claude 3.5 Sonnet</option>
+              <option value="anthropic/claude-3-haiku">Claude 3 Haiku (cheap)</option>
+              <option value="openai/gpt-4o">GPT-4o</option>
+              <option value="openai/gpt-4o-mini">GPT-4o Mini</option>
+              <option value="meta-llama/llama-3.1-405b-instruct">Llama 3.1 405B</option>
+              <option value="google/gemini-flash-1.5">Gemini Flash 1.5</option>
+              <option value="mistralai/mistral-large">Mistral Large</option>
+            </optgroup>
+          </select>
+          <div style="font-size:10px;color:var(--green)">
+            🆓 <a href="https://openrouter.ai/keys" target="_blank" style="color:var(--accent3)">Get free OpenRouter key →</a> — no credit card needed
+          </div>
+        </div></div></div>
+    <div class="ssec"><h3>🎯 Active Provider</h3>
+      <div class="srow"><div class="slbl">Use for agent</div><select class="ssel" id="s-active-prov"><option value="anthropic">Anthropic (Claude)</option><option value="openai">OpenAI</option><option value="gemini">Google Gemini</option><option value="groq">Groq 🆓 (free tier, Llama 3.3)</option><option value="mistral">Mistral AI</option><option value="together">Together AI</option><option value="openrouter">OpenRouter 🆓 (free models available)</option><option value="huggingface">HuggingFace 🆓 (serverless, no key)</option><option value="ollama">Ollama 🆓 (local, no key)</option><option value="lmstudio">LM Studio</option><option value="custom">Custom</option></select></div></div>
+    <div style="display:flex;gap:7px"><button class="btn btn-pri" onclick="saveSettings()">💾 Save</button><button class="btn btn-sec" onclick="testActive()">🔌 Test Active</button></div>
+  </div>
+
+  <div class="spane" id="st-hf">
+    <div class="ssec"><h3><span class="pbadge pb-hf">HF</span> HuggingFace</h3>
+      <div class="srow"><div class="slbl">Token</div><div class="key-row"><input type="password" class="sinp" id="s-hf-token" placeholder="hf_…"><button class="btn btn-sec btn-sm" onclick="testKey('huggingface')">Test</button></div></div>
+      <div class="srow"><div class="slbl">Inference mode</div><select class="ssel" id="s-hf-mode"><option value="api">Inference API (cloud)</option><option value="serverless">Serverless (free tier)</option><option value="dedicated">Dedicated Endpoint</option></select></div>
+      <div class="srow"><div class="slbl">HF Model ID</div><div style="flex:1;display:flex;flex-direction:column;gap:5px">
+          <input class="sinp" id="s-hf-model" style="width:100%" value="mistralai/Mistral-7B-Instruct-v0.3" placeholder="org/model-name">
+          <select class="ssel" id="s-hf-model-select" style="font-size:11px" onchange="document.getElementById('s-hf-model').value=this.value">
+            <optgroup label="🆓 Text / General (no key needed)">
+              <option value="mistralai/Mistral-7B-Instruct-v0.3">Mistral 7B Instruct v0.3 ★</option>
+              <option value="HuggingFaceH4/zephyr-7b-beta">Zephyr 7B Beta</option>
+              <option value="microsoft/Phi-3-mini-4k-instruct">Phi-3 Mini 4K</option>
+              <option value="Qwen/Qwen2.5-7B-Instruct">Qwen 2.5 7B Instruct</option>
+              <option value="Qwen/Qwen2.5-72B-Instruct">Qwen 2.5 72B — largest free</option>
+              <option value="google/gemma-2-9b-it">Gemma 2 9B IT</option>
+              <option value="google/gemma-2-2b-it">Gemma 2 2B IT — fast</option>
+              <option value="meta-llama/Meta-Llama-3.1-8B-Instruct">Llama 3.1 8B Instruct</option>
+              <option value="TinyLlama/TinyLlama-1.1B-Chat-v1.0">TinyLlama 1.1B — tiny/instant</option>
+              <option value="microsoft/DialoGPT-large">DialoGPT Large — always available</option>
+            </optgroup>
+            <optgroup label="👁️ Vision / Multimodal (image + text)">
+              <option value="llava-hf/llava-1.5-7b-hf">LLaVA 1.5 7B ★ — most reliable free vision</option>
+              <option value="llava-hf/llava-v1.6-mistral-7b-hf">LLaVA 1.6 Mistral 7B</option>
+              <option value="llava-hf/llava-v1.6-vicuna-13b-hf">LLaVA 1.6 Vicuna 13B</option>
+              <option value="microsoft/Phi-3.5-vision-instruct">Phi-3.5 Vision 128K</option>
+              <option value="Qwen/Qwen2-VL-7B-Instruct">Qwen2-VL 7B — OCR + charts</option>
+              <option value="Qwen/Qwen2-VL-2B-Instruct">Qwen2-VL 2B — fast vision</option>
+              <option value="Salesforce/blip2-opt-2.7b">BLIP-2 — image captioning</option>
+              <option value="Salesforce/blip-image-captioning-large">BLIP Large — captioning</option>
+              <option value="nlpconnect/vit-gpt2-image-captioning">ViT-GPT2 — tiny, always free</option>
+            </optgroup>
+            <optgroup label="🔓 Uncensored / Unfiltered">
+              <option value="cognitivecomputations/dolphin-2.9-llama3-8b">Dolphin 2.9 Llama3 8B ★ — popular uncensored</option>
+              <option value="cognitivecomputations/dolphin-2.8-mistral-7b-v02">Dolphin 2.8 Mistral 7B</option>
+              <option value="cognitivecomputations/dolphin-2.2.1-mistral-7b">Dolphin 2.2.1 Mistral</option>
+              <option value="NousResearch/Nous-Hermes-2-Mistral-7B-DPO">Nous Hermes 2 Mistral DPO</option>
+              <option value="NousResearch/Nous-Hermes-llama-2-7b">Nous Hermes Llama2 7B</option>
+              <option value="WizardLM/WizardLM-7B-V1.0">WizardLM 7B — complex instructions</option>
+              <option value="OpenAssistant/oasst-sft-4-pythia-12b-epoch-3.5">OpenAssistant Pythia 12B</option>
+            </optgroup>
+            <optgroup label="💻 Code">
+              <option value="Qwen/Qwen2.5-Coder-7B-Instruct">Qwen 2.5 Coder 7B ★</option>
+              <option value="Qwen/Qwen2.5-Coder-32B-Instruct">Qwen 2.5 Coder 32B — best free code</option>
+              <option value="bigcode/starcoder2-15b-instruct-v0.1">StarCoder 2 15B</option>
+              <option value="codellama/CodeLlama-7b-Instruct-hf">CodeLlama 7B</option>
+              <option value="codellama/CodeLlama-13b-Instruct-hf">CodeLlama 13B</option>
+              <option value="deepseek-ai/deepseek-coder-6.7b-instruct">DeepSeek Coder 6.7B</option>
+            </optgroup>
+          </select>
+          <div style="font-size:10px;color:var(--green)">🆓 Serverless mode works with NO token for all public models</div>
+        </div></div>
+      <div class="srow"><div class="slbl">Dedicated URL</div><input class="sinp" id="s-hf-endpoint" style="flex:1" placeholder="https://xxx.endpoints.huggingface.cloud"></div></div>
+    <div class="ssec"><h3>🔍 Browse HuggingFace</h3>
+      
+      <div style="margin-bottom:9px">
+        <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px">Quick picks</div>
+        <div style="display:flex;gap:5px;flex-wrap:wrap">
+          <button class="btn btn-sec btn-sm" onclick="quickHfSearch('mistral 7b instruct')">Mistral 7B</button>
+          <button class="btn btn-sec btn-sm" onclick="quickHfSearch('llama 3 8b instruct')">Llama 3 8B</button>
+          <button class="btn btn-sec btn-sm" onclick="quickHfSearch('qwen2.5 7b instruct')">Qwen2.5 7B</button>
+          <button class="btn btn-sec btn-sm" onclick="quickHfSearch('phi-4')">Phi-4</button>
+          <button class="btn btn-sec btn-sm" onclick="quickHfSearch('gemma 2 9b')">Gemma 2 9B</button>
+          <button class="btn btn-sec btn-sm" onclick="quickHfSearch('deepseek coder v2 lite')">DeepSeek Coder</button>
+          <button class="btn btn-sec btn-sm" onclick="quickHfSearch('codellama 13b instruct')">CodeLlama 13B</button>
+          <button class="btn btn-sec btn-sm" onclick="quickHfSearch('gguf mistral quantized')">GGUF Mistral</button>
+        </div>
+      </div>
+<div class="hf-search-row"><input id="hf-q" placeholder="Search 800k+ models…"><button id="hf-search-btn" onclick="hfSearch()">Search 🤗</button></div>
+      <div class="hf-filter-row"><div class="hf-ft on" data-hf-f="text-generation" onclick="hfFilt(this)">Text Gen</div><div class="hf-ft" data-hf-f="" onclick="hfFilt(this)">All</div><div class="hf-ft" data-hf-f="text2text-generation" onclick="hfFilt(this)">Text2Text</div><div class="hf-ft" data-hf-f="gguf" onclick="hfFilt(this)">GGUF</div><div class="hf-ft" data-hf-f="code" onclick="hfFilt(this)">Code</div></div>
+      <div id="hf-results"></div></div>
+    <div class="ssec"><h3>📥 Download GGUF</h3>
+      <div class="srow"><div class="slbl">Repo ID</div><input class="sinp" id="s-dl-repo" style="flex:1" placeholder="TheBloke/Mistral-7B-Instruct-v0.2-GGUF"></div>
+      <div class="srow"><div class="slbl">Filename</div><input class="sinp" id="s-dl-file" style="flex:1" placeholder="mistral-7b-instruct-v0.2.Q4_K_M.gguf"></div>
+      <div class="dl-progress" id="dl-progress"><div class="dl-label" id="dl-label">Starting…</div><div class="dl-bar-wrap"><div class="dl-bar" id="dl-bar" style="width:0%"></div></div><div id="dl-pct" style="font-size:11px;color:var(--text2)">0%</div></div>
+      <button class="btn btn-hf" style="margin-top:8px" onclick="startDownload()">⬇️ Download</button></div>
+    <div class="ssec"><h3>📦 Downloaded Models</h3><div id="local-models-list"></div><button class="btn btn-sec btn-sm" style="margin-top:7px" onclick="refreshLocalModels()">↻ Refresh</button></div>
+    <button class="btn btn-pri" onclick="saveSettings()">💾 Save</button>
+  </div>
+
+  <div class="spane" id="st-local">
+    <div class="ssec"><h3><span class="pbadge pb-ola">Ollama</span> Ollama</h3>
+      <div class="srow"><div class="slbl">Base URL</div><input class="sinp" id="s-ola-url" style="flex:1" value="http://localhost:11434"></div>
+      <div class="srow"><div class="slbl">Model</div><input class="sinp" id="s-ola-model" style="flex:1" placeholder="llama3.3, mistral, codellama…"></div>
+      <button class="btn btn-sec btn-sm" style="margin-top:5px" onclick="loadOllamaModels()">🔍 Detect Models</button>
+      <div id="ollama-models" style="margin-top:9px"></div>
+      <div style="margin-top:12px">
+          <div style="font-size:11px;font-weight:700;color:var(--text1);margin-bottom:7px">Install / Setup</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="btn btn-pri btn-sm" onclick="Installer.installOllamaFull()">🦙 Full Ollama Setup</button>
+            <button class="btn btn-sec btn-sm" onclick="Installer.openWizard()">🔧 Dependency Wizard</button>
+            <button class="btn btn-sec btn-sm" onclick="Installer.fullDevSetup()">🖥️ Full Dev Setup</button>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+            <button class="btn btn-sec btn-sm" onclick="pullOllamaModel()">📥 Pull Model</button>
+            <button class="btn btn-sec btn-sm" onclick="loadOllamaModels()">🔍 Detect Models</button>
+            <button class="btn btn-sec btn-sm" onclick="startOllamaService()">▶ Start Service</button>
+          </div>
+          <div style="font-size:10px;color:var(--text3);margin-top:7px;line-height:1.5">
+            "Full Ollama Setup" installs: Visual C++ Redist → Git → Ollama → starts service → pulls llama3.2:3b (2GB).<br>
+            "Dependency Wizard" checks and installs Node.js, Python, Docker, CLI tools, and AI/ML packages.
+          </div>
+        </div></div>
+    <div class="ssec"><h3><span class="pbadge pb-lms">LM Studio</span> LM Studio</h3>
+      <div class="srow"><div class="slbl">Base URL</div><input class="sinp" id="s-lms-url" style="flex:1" value="http://localhost:1234"></div>
+      <div class="srow"><div class="slbl">Model</div><input class="sinp" id="s-lms-model" style="flex:1" placeholder="local-model"></div>
+      <button class="btn btn-sec btn-sm" style="margin-top:5px" onclick="testKey('lmstudio')">🔌 Test</button></div>
+    <button class="btn btn-pri" onclick="saveSettings()">💾 Save</button>
+  </div>
+
+  <div class="spane" id="st-media-keys">
+    <div class="ssec"><h3>🖼️ Image Generation Keys</h3>
+      <div class="srow"><div class="slbl"><span class="pbadge pb-oai">OpenAI</span> DALL-E<div class="slbl-sm">Uses OpenAI key above</div></div><span style="font-size:11px;color:var(--green);padding-top:8px">Auto (from Providers)</span></div>
+      <div class="srow"><div class="slbl"><span class="pbadge pb-stab">Stability</span> Stability AI<div class="slbl-sm">stability.ai/platform</div></div><input type="password" class="sinp" id="s-stab-key" placeholder="sk-…" style="flex:1"></div>
+      <div class="srow"><div class="slbl">BFL Flux Pro<div class="slbl-sm">api.bfl.ml</div></div><input type="password" class="sinp" id="s-bfl-key" placeholder="…" style="flex:1"></div>
+      <div class="srow"><div class="slbl">Ideogram<div class="slbl-sm">ideogram.ai</div></div><input type="password" class="sinp" id="s-ideogram-key" placeholder="…" style="flex:1"></div>
+      <div class="srow"><div class="slbl">GetImg.ai</div><input type="password" class="sinp" id="s-getimg-key" placeholder="…" style="flex:1"></div></div>
+    <div class="ssec"><h3>🎬 Video Generation Keys</h3>
+      <div class="srow"><div class="slbl">Runway ML<div class="slbl-sm">dev.runwayml.com</div></div><input type="password" class="sinp" id="s-runway-key" placeholder="…" style="flex:1"></div>
+      <div class="srow"><div class="slbl">Kling AI<div class="slbl-sm">klingai.com</div></div><input type="password" class="sinp" id="s-kling-key" placeholder="…" style="flex:1"></div>
+      <div class="srow"><div class="slbl">Luma Dream Machine<div class="slbl-sm">lumalabs.ai</div></div><input type="password" class="sinp" id="s-luma-key" placeholder="…" style="flex:1"></div>
+      <div class="srow"><div class="slbl">Pika<div class="slbl-sm">pika.art</div></div><input type="password" class="sinp" id="s-pika-key" placeholder="…" style="flex:1"></div>
+      <div class="srow"><div class="slbl">MiniMax<div class="slbl-sm">minimaxi.chat</div></div><input type="password" class="sinp" id="s-minimax-key" placeholder="…" style="flex:1"></div></div>
+    <button class="btn btn-pri" onclick="saveSettings()">💾 Save</button>
+  </div>
+
+  <div class="spane" id="st-agent">
+    <div class="ssec"><h3>🧠 Parameters</h3>
+      <div class="srow"><div class="slbl">Max Tokens</div><input type="number" class="sinp" id="s-max-tok" value="8192" min="256" max="128000" step="256" style="flex:1"></div>
+      <div class="srow"><div class="slbl">Temperature</div><input type="number" class="sinp" id="s-temp" value="0.3" min="0" max="2" step="0.05" style="flex:1"></div>
+      <div class="srow"><div class="slbl">Max Agent Steps</div><input type="number" class="sinp" id="s-max-steps" value="25" min="1" max="200" style="flex:1"></div>
+      <div class="srow"><div class="slbl">Auto-execute</div><select class="ssel" id="s-auto-exec"><option value="safe">Safe (ask before writes)</option><option value="full">Full auto</option><option value="manual">Always ask</option></select></div>
+      <div class="srow"><div class="slbl">Web search</div><select class="ssel" id="s-web"><option value="enabled">Enabled</option><option value="disabled">Disabled</option></select></div></div>
+    <button class="btn btn-pri" onclick="saveSettings()">💾 Save</button>
+  </div>
+
+  <div class="spane" id="st-custom">
+    <div class="ssec"><h3>Custom / Self-hosted Endpoint</h3>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:12px">Any OpenAI-compatible API: vLLM, llama.cpp, Text Generation WebUI, Jan…</p>
+      <div class="srow"><div class="slbl">Base URL</div><input class="sinp" id="s-cst-url" style="flex:1" placeholder="http://localhost:8080/v1/chat/completions"></div>
+      <div class="srow"><div class="slbl">API Key (optional)</div><input type="password" class="sinp" id="s-cst-key" style="flex:1" placeholder="(optional)"></div>
+      <div class="srow"><div class="slbl">Model ID</div><input class="sinp" id="s-cst-model" style="flex:1" placeholder="local-model"></div>
+      <div class="srow"><div class="slbl">Format</div><select class="ssel" id="s-cst-fmt"><option value="openai">OpenAI-compatible</option><option value="anthropic">Anthropic-compatible</option><option value="hf">HuggingFace</option></select></div>
+      <button class="btn btn-sec btn-sm" style="margin-top:5px" onclick="testKey('custom')">🔌 Test</button></div>
+    <button class="btn btn-pri" onclick="saveSettings()">💾 Save</button>
+  </div>
+
+</div>
+</div>
+
+</div><!-- /content -->
+</div><!-- /app -->
+
+<div id="sb-bar">
+  <div class="si"><div class="sd x" id="sb-dot"></div><span id="sb-txt">No key</span></div>
+  <div class="si" id="sb-prov-si">—</div>
+  <div class="si" style="margin-left:auto" id="sb-steps">Steps: 0</div>
+  <div class="si" id="sb-tok">Tokens: 0</div>
+</div>
+<div id="toast-c"></div>
+
+<!-- Shared modal (connectors + skills param dialog) -->
+<div id="conn-modal"><div id="conn-modal-inner"><div id="conn-modal-body"></div></div></div>
+
+<!-- Load modules -->
+<script src="modules/free-tier.js"></script>
+<script src="modules/installer.js"></script>
+<script src="modules/doctor.js"></script>
+<script src="modules/media.js"></script>
+<script src="modules/connectors.js"></script>
+<script src="modules/skills.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

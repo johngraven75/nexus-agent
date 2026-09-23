@@ -1,0 +1,68 @@
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  lint-and-validate:
+    name: Lint & Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate all JS files parse cleanly
+        run: |
+          for f in src/main.js src/preload.js src/app.js src/modules/*.js; do
+            node --check "$f" && echo "✅ $f" || (echo "❌ $f has syntax errors" && exit 1)
+          done
+
+      - name: Validate package.json
+        run: |
+          node -e "
+            const p = JSON.parse(require('fs').readFileSync('package.json','utf8'));
+            const required = ['name','version','main','build'];
+            required.forEach(k => {
+              if (!p[k]) { console.error('Missing field:', k); process.exit(1); }
+            });
+            console.log('✅ package.json valid — v' + p.version);
+          "
+
+      - name: Check HTML structure
+        run: |
+          node -e "
+            const html = require('fs').readFileSync('src/index.html','utf8');
+            const checks = [
+              ['Has DOCTYPE', html.includes('<!DOCTYPE html>')],
+              ['Has preload script', html.includes('preload.js')],
+              ['Has app.js', html.includes('app.js')],
+              ['Has free-tier module', html.includes('free-tier.js')],
+              ['Has installer module', html.includes('installer.js')],
+              ['No inline credentials', !html.includes('sk-ant-') && !html.includes('sk-or-')],
+            ];
+            let ok = true;
+            checks.forEach(([name, pass]) => {
+              console.log((pass ? '✅' : '❌') + ' ' + name);
+              if (!pass) ok = false;
+            });
+            if (!ok) process.exit(1);
+          "
+
+      - name: Size check (app.js should not exceed 3MB)
+        run: |
+          SIZE=$(wc -c < src/app.js)
+          echo "app.js size: ${SIZE} bytes"
+          if [ $SIZE -gt 3145728 ]; then
+            echo "❌ app.js exceeds 3MB — consider splitting modules"
+            exit 1
+          fi
+          echo "✅ Size OK"

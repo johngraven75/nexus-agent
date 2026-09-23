@@ -1,0 +1,81 @@
+name: Monthly Model List Refresh
+
+on:
+  schedule:
+    - cron: '0 8 1 * *'   # First of every month, 08:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh-models:
+    name: Refresh Free Model Catalog
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Fetch current OpenRouter free models
+        env:
+          OPENROUTER_KEY: ${{ secrets.OPENROUTER_KEY }}
+        run: |
+          if [ -n "$OPENROUTER_KEY" ]; then
+            curl -s "https://openrouter.ai/api/v1/models" \
+              -H "Authorization: Bearer $OPENROUTER_KEY" \
+              -H "Accept: application/json" | \
+            node -e "
+              const data = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+              const free = (data.data||[]).filter(m =>
+                parseFloat(m.pricing?.prompt||1) === 0 || m.id.endsWith(':free')
+              );
+              console.log('Found', free.length, 'free models on OpenRouter');
+              free.slice(0,20).forEach(m => console.log(' -', m.id, '|', m.name));
+            " | tee /tmp/or-models.txt
+          else
+            echo "No OPENROUTER_KEY secret — skipping live fetch"
+            echo "Add OPENROUTER_KEY to repo secrets for automatic updates"
+          fi
+
+      - name: Check for new HuggingFace models
+        run: |
+          echo "Checking HuggingFace popular text-generation models..."
+          curl -s "https://huggingface.co/api/models?pipeline_tag=text-generation&sort=downloads&direction=-1&limit=10" \
+            -H "Accept: application/json" | \
+          node -e "
+            try {
+              const models = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+              if (Array.isArray(models)) {
+                console.log('Top HF text-generation models:');
+                models.forEach(m => console.log(' -', m.id, '| downloads:', m.downloads));
+              }
+            } catch(e) { console.log('Rate limited or error:', e.message); }
+          " || echo "HF API unavailable"
+
+      - name: Create PR if models changed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Check if anything changed
+          if git diff --quiet; then
+            echo "No model changes detected"
+          else
+            BRANCH="auto/model-refresh-$(date +%Y%m)"
+            git checkout -b "$BRANCH"
+            git add -A
+            git commit -m "chore: monthly free model catalog refresh $(date +%Y-%m)"
+            git push origin "$BRANCH"
+            gh pr create \
+              --title "Monthly model refresh: $(date +%B %Y)" \
+              --body "Automated monthly refresh of the free model catalog. Review changes and merge." \
+              --base main \
+              --head "$BRANCH" \
+              --label "automated,models"
+          fi
