@@ -581,34 +581,28 @@ async function callCustom(system, msgs, maxTokens, temperature) {
 function populateSettings() {
   const c = S.cfg;
   const set = (id, v) => { const e=document.getElementById(id); if(e&&v!==undefined) e.value=v; };
-  set("s-ant-key",   c.anthropicKey);  set("s-ant-model", c.anthropicModel||"claude-sonnet-4-6");
-  set("s-oai-key",   c.openaiKey);     set("s-oai-model", c.openaiModel||"gpt-4o");
-  set("s-gem-key",   c.geminiKey);     set("s-gem-model", c.geminiModel||"gemini-2.0-flash");
-  set("s-grq-key",   c.groqKey);       set("s-grq-model", c.groqModel||"llama-3.3-70b-versatile");
-  set("s-mis-key",   c.mistralKey);    set("s-mis-model", c.mistralModel||"mistral-large-latest");
-  set("s-tog-key",   c.togetherKey);   set("s-tog-model", c.togetherModel||"meta-llama/Llama-3.3-70B-Instruct-Turbo");
-  set("s-ort-key",   c.openrouterKey); set("s-ort-model", c.openrouterModel||"anthropic/claude-3.5-sonnet");
-  set("s-hf-token",  c.hfToken);       set("s-hf-model",  c.hfModel||"mistralai/Mistral-7B-Instruct-v0.3");
-  set("s-hf-mode",   c.hfInferenceMode||"api"); set("s-hf-endpoint", c.hfEndpointUrl||"");
-  set("s-ola-url",   c.ollamaUrl||"http://localhost:11434"); set("s-ola-model", c.ollamaModel||"");
-  set("s-lms-url",   c.lmstudioUrl||"http://localhost:1234"); set("s-lms-model", c.lmstudioModel||"local-model");
-  set("s-max-tok",   c.maxTokens||8192); set("s-temp", c.temperature||0.3); set("s-max-steps", c.maxSteps||25);
-  set("s-auto-exec", c.autoExec||"safe"); set("s-web", c.webSearch||"enabled");
-  set("s-active-prov", c.primaryProvider||"anthropic");
-  set("s-cst-url",   c.customEndpointUrl||""); set("s-cst-key", c.customEndpointKey||"");
-  set("s-cst-model", c.customEndpointModel||""); set("s-cst-fmt", c.customEndpointFmt||"openai");
+  set('s-ant-key',   c.anthropicKey);  set('s-ant-model', c.anthropicModel||'claude-sonnet-4-6');
+  set('s-oai-key',   c.openaiKey);     set('s-oai-model', c.openaiModel||'gpt-4o');
+  set('s-gem-key',   c.geminiKey);     set('s-gem-model', c.geminiModel||'gemini-2.0-flash');
+  set('s-grq-key',   c.groqKey);       set('s-grq-model', c.groqModel||'llama-3.3-70b-versatile');
+  set('s-mis-key',   c.mistralKey);    set('s-mis-model', c.mistralModel||'mistral-large-latest');
+  set('s-tog-key',   c.togetherKey);   set('s-tog-model', c.togetherModel||'meta-llama/Llama-3.3-70B-Instruct-Turbo');
+  set('s-ort-key',   c.openrouterKey); set('s-ort-model', c.openrouterModel||'anthropic/claude-3.5-sonnet');
+  set('s-hf-token',  c.hfToken);       set('s-hf-model',  c.hfModel||'mistralai/Mistral-7B-Instruct-v0.3');
+  set('s-hf-mode',   c.hfInferenceMode||'api'); set('s-hf-endpoint', c.hfEndpointUrl||'');
+  set('s-ola-url',   c.ollamaUrl||'http://localhost:11434'); set('s-ola-model', c.ollamaModel||'');
+  set('s-lms-url',   c.lmstudioUrl||'http://localhost:1234'); set('s-lms-model', c.lmstudioModel||'local-model');
+  set('s-max-tok',   c.maxTokens||8192); set('s-temp', c.temperature||0.3); set('s-max-steps', c.maxSteps||25);
+  set('s-auto-exec', c.autoExec||'safe'); set('s-web', c.webSearch||'enabled');
+  set('s-active-prov', c.primaryProvider||'anthropic');
+  set('s-cst-url',   c.customEndpointUrl||''); set('s-cst-key', c.customEndpointKey||'');
+  set('s-cst-model', c.customEndpointModel||''); set('s-cst-fmt', c.customEndpointFmt||'openai');
   // Media keys
-  set("s-stab-key",    c.stabilityKey||"");   set("s-bfl-key",     c.bflKey||"");
-  set("s-ideogram-key",c.ideogramKey||"");    set("s-getimg-key",  c.getimgKey||"");
-  set("s-runway-key",  c.runwayKey||"");      set("s-kling-key",   c.klingKey||"");
-  set("s-luma-key",    c.lumaKey||"");        set("s-pika-key",    c.pikaKey||"");
-  set("s-minimax-key", c.minimaxKey||"");
-  // Free-tier extras: ensure OR model shows :free suffix, HF defaults to serverless
-  const ortModel = document.getElementById("s-ort-model");
-  if (ortModel && c.openrouterModel) ortModel.value = c.openrouterModel;
-  const hfMode = document.getElementById("s-hf-mode");
-  if (hfMode && !c.hfToken && (!c.hfInferenceMode || c.hfInferenceMode === "api")) hfMode.value = "serverless";
-  if (typeof updateOrModelOptions === "function") setTimeout(updateOrModelOptions, 0);
+  set('s-stab-key',    c.stabilityKey||'');   set('s-bfl-key',     c.bflKey||'');
+  set('s-ideogram-key',c.ideogramKey||'');    set('s-getimg-key',  c.getimgKey||'');
+  set('s-runway-key',  c.runwayKey||'');      set('s-kling-key',   c.klingKey||'');
+  set('s-luma-key',    c.lumaKey||'');        set('s-pika-key',    c.pikaKey||'');
+  set('s-minimax-key', c.minimaxKey||'');
 }
 
 async function saveSettings() {
