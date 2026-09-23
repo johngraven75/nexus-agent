@@ -1,0 +1,22 @@
+name: Release
+on:
+  push:
+    tags:
+      - 'v*'
+jobs:
+
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 16
+      - run: npm ci
+      - run: npm run build
+      - uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dist/Nexus*-win.zip
+            dist/Nexus*-setup.exe
+            dist/*-win_*-portable.zip
